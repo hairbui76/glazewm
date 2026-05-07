@@ -26,4 +26,7 @@ pub struct MonitorDto {
   pub device_path: Option<String>,
   pub hardware_id: Option<String>,
   pub working_rect: Rect,
+  /// Whether this monitor is the configured primary monitor.
+  #[serde(default)]
+  pub is_primary: bool,
 }

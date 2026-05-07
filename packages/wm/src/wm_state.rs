@@ -109,16 +109,24 @@ impl WmState {
     // Get the originally focused window when the WM was started.
     let focused_window = self.dispatcher.focused_window().ok();
 
-    // Create a monitor, and consequently a workspace, for each detected
-    // native monitor.
+    // Create monitors for all detected native displays first, so that
+    // `state.primary_monitor(config)` lookups during workspace assignment
+    // can resolve the configured primary regardless of its position in the
+    // sorted order.
+    let mut new_monitors = Vec::new();
     for native_display in self.dispatcher.sorted_displays()? {
       if let Ok(native_properties) =
         NativeMonitorProperties::try_from(&native_display)
       {
         let monitor =
           add_monitor(native_display, native_properties, self)?;
-        move_bounded_workspaces_to_new_monitor(&monitor, self, config)?;
+        new_monitors.push(monitor);
       }
+    }
+
+    // Assign workspaces to each monitor in a second pass.
+    for monitor in new_monitors {
+      move_bounded_workspaces_to_new_monitor(&monitor, self, config)?;
     }
 
     // Manage windows in reverse z-order (bottom to top). This helps to
@@ -128,7 +136,19 @@ impl WmState {
     {
       let nearest_workspace = self
         .nearest_monitor(&native_window)
-        .and_then(|m| m.displayed_workspace());
+        .and_then(|m| m.displayed_workspace())
+        .or_else(|| {
+          // When multi-monitor workspaces are disabled, non-primary
+          // monitors have no workspaces. Fall back to the primary
+          // monitor so that windows on those monitors are still managed.
+          if !config.value.general.multi_monitor_workspaces {
+            self
+              .primary_monitor(config)
+              .and_then(|m| m.displayed_workspace())
+          } else {
+            None
+          }
+        });
 
       if let Some(workspace) = nearest_workspace {
         manage_window(
@@ -168,6 +188,31 @@ impl WmState {
 
   pub fn monitors(&self) -> Vec<Monitor> {
     self.root_container.monitors()
+  }
+
+  /// Gets the primary monitor based on the user config.
+  ///
+  /// If `general.primary_monitor` is set, returns the monitor whose
+  /// `device_name` matches. Otherwise, falls back to the leftmost monitor
+  /// (index 0).
+  pub fn primary_monitor(
+    &self,
+    config: &UserConfig,
+  ) -> Option<Monitor> {
+    let monitors = self.monitors();
+
+    if let Some(name) = config.value.general.primary_monitor.as_deref() {
+      let matched = monitors
+        .iter()
+        .find(|m| m.native_properties().device_name == name)
+        .cloned();
+
+      if matched.is_some() {
+        return matched;
+      }
+    }
+
+    monitors.into_iter().next()
   }
 
   pub fn workspaces(&self) -> Vec<Workspace> {

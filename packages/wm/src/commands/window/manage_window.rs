@@ -9,8 +9,8 @@ use crate::{
     window::run_window_rules,
   },
   models::{
-    Container, Monitor, NativeWindowProperties, NonTilingWindow,
-    TilingWindow, WindowContainer,
+    Container, NativeWindowProperties, NonTilingWindow, TilingWindow,
+    WindowContainer, Workspace,
   },
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -161,13 +161,17 @@ fn create_window(
     .nearest_monitor(&native_window)
     .context("No nearest monitor.")?;
 
+  // Fall back to the target parent's workspace when the nearest monitor
+  // has no displayed workspace (e.g. when `multi_monitor_workspaces` is
+  // disabled and a window resides on a non-primary monitor).
   let nearest_workspace = nearest_monitor
     .displayed_workspace()
+    .or_else(|| target_parent.as_ref()?.workspace())
     .context("No nearest workspace.")?;
 
   let gaps_config = config.value.gaps.clone();
   let window_state =
-    window_state_to_create(&native_properties, &nearest_monitor, config)?;
+    window_state_to_create(&native_properties, &nearest_workspace, config)?;
 
   // Attach the new window as the first child of the target parent (if
   // provided), otherwise, add as a sibling of the focused container.
@@ -264,16 +268,12 @@ fn create_window(
 /// Note that maximized windows are initialized as tiling.
 fn window_state_to_create(
   native_properties: &NativeWindowProperties,
-  nearest_monitor: &Monitor,
+  nearest_workspace: &Workspace,
   config: &UserConfig,
 ) -> anyhow::Result<WindowState> {
   if native_properties.is_minimized {
     return Ok(WindowState::Minimized);
   }
-
-  let nearest_workspace = nearest_monitor
-    .displayed_workspace()
-    .context("No workspace.")?;
 
   // Only initialize as fullscreen if the window *exceeds* the workspace
   // bounds (due to the 1px inset).

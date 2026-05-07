@@ -50,11 +50,16 @@ pub fn handle_window_moved_or_resized_end(
         .nearest_monitor(&window.native())
         .context("Failed to get workspace of nearest monitor.")?;
 
-      let should_fullscreen = window.should_fullscreen(
-        &nearest_monitor
-          .displayed_workspace()
-          .context("No workspace.")?,
-      )?;
+      // Fall back to the window's own workspace when the nearest monitor
+      // has no displayed workspace (e.g. when `multi_monitor_workspaces`
+      // is disabled and the cursor is over a non-primary monitor).
+      let nearest_workspace = nearest_monitor
+        .displayed_workspace()
+        .or_else(|| window.workspace())
+        .context("No workspace.")?;
+
+      let should_fullscreen =
+        window.should_fullscreen(&nearest_workspace)?;
 
       if is_maximized || should_fullscreen {
         let fullscreen_state = if let WindowState::Fullscreen(

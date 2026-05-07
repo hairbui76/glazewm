@@ -96,6 +96,17 @@ pub struct GeneralConfig {
 
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
+
+  /// Whether workspaces can span multiple monitors. When `false`, only the
+  /// primary monitor receives workspaces; external monitors are left
+  /// unmanaged.
+  pub multi_monitor_workspaces: bool,
+
+  /// Optional `device_name` of the monitor to treat as the primary monitor.
+  /// When unset, the leftmost monitor (index 0) is used as the primary.
+  /// This determines which monitor receives workspaces when
+  /// `multi_monitor_workspaces` is `false`.
+  pub primary_monitor: Option<String>,
 }
 
 impl Default for GeneralConfig {
@@ -118,6 +129,8 @@ impl Default for GeneralConfig {
         }
       },
       show_all_in_taskbar: false,
+      multi_monitor_workspaces: true,
+      primary_monitor: None,
     }
   }
 }

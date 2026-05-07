@@ -131,6 +131,9 @@ impl Monitor {
       #[cfg(not(target_os = "windows"))]
       hardware_id: None,
       working_rect: self.native_properties().working_area,
+      // Defaults to `false`; populated via `set_is_primary_on_dto` at
+      // call sites that have access to `UserConfig`.
+      is_primary: false,
     }))
   }
 }

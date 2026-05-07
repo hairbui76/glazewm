@@ -226,8 +226,12 @@ pub fn handle_window_moved_or_resized(
     }
 
     let should_fullscreen = {
+      // Fall back to the window's own workspace when the nearest monitor
+      // has no displayed workspace (e.g. when `multi_monitor_workspaces`
+      // is disabled and the cursor is over a non-primary monitor).
       let workspace = nearest_monitor
         .displayed_workspace()
+        .or_else(|| window.workspace())
         .context("No workspace.")?;
 
       let should_fullscreen = window.should_fullscreen(&workspace)?;
@@ -377,24 +381,25 @@ pub fn update_floating_window_position(
   let monitor = window.monitor().context("No monitor.")?;
 
   // Update the window's workspace if it goes out of bounds of its
-  // current workspace.
+  // current workspace. When the target monitor has no displayed workspace
+  // (e.g. `multi_monitor_workspaces: false` on a non-primary monitor),
+  // keep the window on its current workspace instead.
   if monitor.id() != nearest_monitor.id() {
-    let updated_workspace = nearest_monitor
-      .displayed_workspace()
-      .context("Failed to get workspace of nearest monitor.")?;
+    if let Some(updated_workspace) = nearest_monitor.displayed_workspace()
+    {
+      tracing::info!(
+        "Floating window moved to new workspace: {updated_workspace}",
+      );
 
-    tracing::info!(
-      "Floating window moved to new workspace: {updated_workspace}",
-    );
+      window.set_insertion_target(None);
 
-    window.set_insertion_target(None);
-
-    move_container_within_tree(
-      &window.clone().into(),
-      &updated_workspace.clone().into(),
-      updated_workspace.child_count(),
-      state,
-    )?;
+      move_container_within_tree(
+        &window.clone().into(),
+        &updated_workspace.clone().into(),
+        updated_workspace.child_count(),
+        state,
+      )?;
+    }
   }
 
   Ok(())
