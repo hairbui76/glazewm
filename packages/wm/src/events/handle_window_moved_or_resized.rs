@@ -12,7 +12,7 @@ use wm_platform::{NativeWindow, Rect};
 use crate::{
   commands::{
     container::{flatten_split_container, move_container_within_tree},
-    window::update_window_state,
+    window::{unmanage_window, update_window_state},
   },
   events::handle_window_moved_or_resized_end,
   models::{Monitor, NonTilingWindow, WindowContainer},
@@ -197,6 +197,17 @@ pub fn handle_window_moved_or_resized(
     let nearest_monitor = state
       .nearest_monitor(&window.native())
       .context("No nearest monitor.")?;
+
+    // When multi-monitor workspaces are disabled and the window has
+    // moved to a monitor with no workspace (i.e. a non-primary monitor),
+    // unmanage it immediately — before any state checks — so it is not
+    // snapped back to the primary monitor on the next workspace switch.
+    if !config.value.general.multi_monitor_workspaces
+      && nearest_monitor.displayed_workspace().is_none()
+    {
+      unmanage_window(window.clone(), state)?;
+      return Ok(());
+    }
 
     // For `HideMethod::PlaceInCorner`, hiding/showing is implemented by
     // repositioning the window. Since the OS won't emit real

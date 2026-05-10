@@ -102,11 +102,15 @@ pub struct GeneralConfig {
   /// unmanaged.
   pub multi_monitor_workspaces: bool,
 
-  /// Optional `device_name` of the monitor to treat as the primary monitor.
-  /// When unset, the leftmost monitor (index 0) is used as the primary.
-  /// This determines which monitor receives workspaces when
+  /// Optional stable identifier of the monitor to treat as the primary
+  /// monitor. When unset, the leftmost monitor (index 0) is used as the
+  /// primary. This determines which monitor receives workspaces when
   /// `multi_monitor_workspaces` is `false`.
-  pub primary_monitor: Option<String>,
+  ///
+  /// On Windows, set this to the EDID-derived hardware ID. On macOS, set this
+  /// to the CoreGraphics display UUID (`hardwareId` in `glazewm query monitors`).
+  #[serde(alias = "hardwareId")]
+  pub primary_monitor_hardware_id: Option<String>,
 }
 
 impl Default for GeneralConfig {
@@ -130,7 +134,7 @@ impl Default for GeneralConfig {
       },
       show_all_in_taskbar: false,
       multi_monitor_workspaces: true,
-      primary_monitor: None,
+      primary_monitor_hardware_id: None,
     }
   }
 }

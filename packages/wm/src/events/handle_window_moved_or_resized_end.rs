@@ -7,7 +7,7 @@ use wm_platform::{LengthValue, Point, Rect};
 use crate::{
   commands::{
     container::{move_container_within_tree, wrap_in_split_container},
-    window::{set_window_size, update_window_state},
+    window::{set_window_size, unmanage_window, update_window_state},
   },
   events::update_floating_window_position,
   models::{
@@ -49,6 +49,18 @@ pub fn handle_window_moved_or_resized_end(
       let nearest_monitor = state
         .nearest_monitor(&window.native())
         .context("Failed to get workspace of nearest monitor.")?;
+
+      // When multi-monitor workspaces are disabled and the window is
+      // dropped on a monitor with no workspace (i.e. a non-primary
+      // monitor), unmanage it so GlazeWM no longer controls it instead
+      // of snapping it back to the primary monitor.
+      if !config.value.general.multi_monitor_workspaces
+        && nearest_monitor.displayed_workspace().is_none()
+      {
+        window.set_active_drag(None);
+        unmanage_window(window.as_window_container()?, state)?;
+        return Ok(());
+      }
 
       // Fall back to the window's own workspace when the nearest monitor
       // has no displayed workspace (e.g. when `multi_monitor_workspaces`

@@ -192,19 +192,21 @@ impl WmState {
 
   /// Gets the primary monitor based on the user config.
   ///
-  /// If `general.primary_monitor` is set, returns the monitor whose
-  /// `device_name` matches. Otherwise, falls back to the leftmost monitor
-  /// (index 0).
+  /// If `general.primary_monitor_hardware_id` is set, returns the monitor whose
+  /// hardware ID or display UUID matches (see config docs). Otherwise, falls back
+  /// to the leftmost monitor (index 0).
   pub fn primary_monitor(
     &self,
     config: &UserConfig,
   ) -> Option<Monitor> {
     let monitors = self.monitors();
 
-    if let Some(name) = config.value.general.primary_monitor.as_deref() {
+    if let Some(id) =
+      config.value.general.primary_monitor_hardware_id.as_deref()
+    {
       let matched = monitors
         .iter()
-        .find(|m| m.native_properties().device_name == name)
+        .find(|m| Self::monitor_matches_primary_hardware_id(m, id))
         .cloned();
 
       if matched.is_some() {
@@ -213,6 +215,41 @@ impl WmState {
     }
 
     monitors.into_iter().next()
+  }
+
+  /// Whether this monitor matches `general.primary_monitor_hardware_id` in config.
+  ///
+  /// # Platform-specific
+  ///
+  /// - **Windows**: Compares against the EDID-derived hardware ID.
+  /// - **macOS**: Compares against the CoreGraphics display UUID.
+  #[cfg(target_os = "windows")]
+  fn monitor_matches_primary_hardware_id(
+    monitor: &Monitor,
+    id: &str,
+  ) -> bool {
+    monitor
+      .native_properties()
+      .hardware_id
+      .as_deref()
+      == Some(id)
+  }
+
+  #[cfg(target_os = "macos")]
+  fn monitor_matches_primary_hardware_id(
+    monitor: &Monitor,
+    id: &str,
+  ) -> bool {
+    monitor.native_properties().device_uuid == id
+  }
+
+  #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+  fn monitor_matches_primary_hardware_id(
+    monitor: &Monitor,
+    id: &str,
+  ) -> bool {
+    let _ = (monitor, id);
+    false
   }
 
   pub fn workspaces(&self) -> Vec<Workspace> {

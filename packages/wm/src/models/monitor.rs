@@ -128,7 +128,12 @@ impl Monitor {
       device_path: None,
       #[cfg(target_os = "windows")]
       hardware_id: self.native_properties().hardware_id,
-      #[cfg(not(target_os = "windows"))]
+      #[cfg(target_os = "macos")]
+      hardware_id: Some(self.native_properties().device_uuid.clone()),
+      #[cfg(all(
+        not(target_os = "windows"),
+        not(target_os = "macos")
+      ))]
       hardware_id: None,
       working_rect: self.native_properties().working_area,
       // Defaults to `false`; populated via `set_is_primary_on_dto` at
