@@ -3,8 +3,9 @@ use wm_common::try_warn;
 
 use crate::{
   commands::monitor::{
-    add_monitor, move_bounded_workspaces_to_new_monitor, remove_monitor,
-    sort_monitors, update_monitor,
+    add_monitor, consolidate_non_primary_workspaces_onto_primary,
+    move_bounded_workspaces_to_new_monitor, remove_monitor, sort_monitors,
+    update_monitor,
   },
   models::{Monitor, NativeMonitorProperties},
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -76,6 +77,17 @@ pub fn handle_display_settings_changed(
 
   // Sort monitors by position.
   sort_monitors(&state.root_container)?;
+
+  // The logical primary can change identity with the topology (e.g. the
+  // monitor matching `general.primary_monitor_hardware_id` gets plugged in
+  // after startup). Re-enforce that only the primary holds workspaces,
+  // regardless of which add/update path each monitor went through above.
+  //
+  // Runs before the loop below so that a newly added primary receives the
+  // existing workspaces instead of activating a fallback workspace.
+  if !config.value.general.multi_monitor_workspaces {
+    consolidate_non_primary_workspaces_onto_primary(state, config)?;
+  }
 
   for new_monitor in new_monitors {
     move_bounded_workspaces_to_new_monitor(&new_monitor, state, config)?;

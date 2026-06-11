@@ -67,6 +67,8 @@ impl Default for GapsConfig {
   }
 }
 
+// Mirrors the YAML config, where boolean toggles are idiomatic.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct GeneralConfig {

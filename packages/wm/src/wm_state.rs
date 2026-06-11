@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 
 use anyhow::Context;
 use tokio::sync::mpsc::{self};
@@ -6,7 +6,7 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
 use wm_platform::{
-  Direction, Dispatcher, Display, NativeWindow, Point, Rect,
+  Direction, Dispatcher, Display, NativeWindow, Point, Rect, WindowId,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{NativeWindowWindowsExt, OpacityValue};
@@ -61,6 +61,16 @@ pub struct WmState {
   /// `ignore` command.
   pub ignored_windows: Vec<NativeWindow>,
 
+  /// Windows `GlazeWM` released with `multi_monitor_workspaces: false` so they
+  /// could stay on a display without workspaces. Attempt to `manage_window`
+  /// again when the user finishes moving one onto the primary monitor.
+  pub(crate) native_windows_pending_remanage: Vec<NativeWindow>,
+
+  /// Windows-only: `HWND`s with an active `EVENT_SYSTEM_MOVESIZE*` session so
+  /// `EVENT_OBJECT_LOCATIONCHANGE` can be told apart from Win+Shift+Arrow
+  /// moves (location-only, no interactive start/end).
+  pub(crate) native_windows_in_interactive_move: HashSet<WindowId>,
+
   /// Whether the WM is paused.
   pub is_paused: bool,
 
@@ -92,11 +102,41 @@ impl WmState {
       unmanaged_or_minimized_timestamp: None,
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
+      native_windows_pending_remanage: Vec::new(),
+      native_windows_in_interactive_move: HashSet::default(),
       is_paused: false,
       is_focus_synced: false,
       has_initialized: false,
       event_tx,
       exit_tx,
+    }
+  }
+
+  /// Registers a native handle for possible re-management once it is moved
+  /// back onto the primary monitor (`multi_monitor_workspaces: false`).
+  pub(crate) fn register_native_window_pending_remanage(
+    &mut self,
+    window: NativeWindow,
+  ) {
+    self.native_windows_pending_remanage.retain(|w| w.id() != window.id());
+    self.native_windows_pending_remanage.push(window);
+  }
+
+  /// If `native_window` is registered for re-management, drops that entry and
+  /// returns `true`.
+  pub(crate) fn take_native_window_pending_remanage(
+    &mut self,
+    native_window: &NativeWindow,
+  ) -> bool {
+    if let Some(pos) = self
+      .native_windows_pending_remanage
+      .iter()
+      .position(|w| w == native_window)
+    {
+      self.native_windows_pending_remanage.swap_remove(pos);
+      true
+    } else {
+      false
     }
   }
 
@@ -136,19 +176,7 @@ impl WmState {
     {
       let nearest_workspace = self
         .nearest_monitor(&native_window)
-        .and_then(|m| m.displayed_workspace())
-        .or_else(|| {
-          // When multi-monitor workspaces are disabled, non-primary
-          // monitors have no workspaces. Fall back to the primary
-          // monitor so that windows on those monitors are still managed.
-          if !config.value.general.multi_monitor_workspaces {
-            self
-              .primary_monitor(config)
-              .and_then(|m| m.displayed_workspace())
-          } else {
-            None
-          }
-        });
+        .and_then(|m| m.displayed_workspace());
 
       if let Some(workspace) = nearest_workspace {
         manage_window(
@@ -157,6 +185,13 @@ impl WmState {
           self,
           config,
         )?;
+      } else if !config.value.general.multi_monitor_workspaces {
+        // The window is on a monitor without workspaces (i.e. a
+        // non-primary monitor with `multi_monitor_workspaces: false`).
+        // Leave it OS-managed so that workspace changes on the primary
+        // monitor don't affect it, and re-manage it once it is moved
+        // onto the primary monitor.
+        self.register_native_window_pending_remanage(native_window);
       }
     }
 
@@ -758,6 +793,10 @@ impl WmState {
 
     // Prune ignored windows that are no longer valid.
     self.ignored_windows.retain(NativeWindow::is_valid);
+
+    self
+      .native_windows_pending_remanage
+      .retain(NativeWindow::is_valid);
 
     Ok(())
   }

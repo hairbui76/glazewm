@@ -196,8 +196,18 @@ pub fn move_workspace_to_monitor(
 
   match origin_monitor.child_count() {
     0 => {
-      // Prevent origin monitor from having no workspaces.
-      activate_workspace(None, Some(origin_monitor), state, config)?;
+      // Prevent origin monitor from having no workspaces. Skipped for
+      // non-primary monitors when `multi_monitor_workspaces` is disabled,
+      // since those must stay workspace-free.
+      let needs_fallback_workspace =
+        config.value.general.multi_monitor_workspaces
+          || state
+            .primary_monitor(config)
+            .is_some_and(|primary| primary.id() == origin_monitor.id());
+
+      if needs_fallback_workspace {
+        activate_workspace(None, Some(origin_monitor), state, config)?;
+      }
     }
     _ => {
       // Redraw the workspace on the origin monitor.

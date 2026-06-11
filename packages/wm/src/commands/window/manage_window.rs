@@ -17,6 +17,32 @@ use crate::{
   wm_state::WmState,
 };
 
+/// Clears ignore for the OS foreground window and runs `manage_window` if
+/// it is not already managed.
+///
+/// Call this after the user focuses the previously ignored window; keybindings
+/// cannot target ignored windows via WM focus.
+pub fn manage_foreground_native_window(
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<()> {
+  let native_window = state.dispatcher.focused_window()?;
+
+  if native_window.is_desktop_window()? {
+    return Ok(());
+  }
+
+  state
+    .ignored_windows
+    .retain(|ignored| ignored != &native_window);
+
+  if state.window_from_native(&native_window).is_some() {
+    return Ok(());
+  }
+
+  manage_window(native_window, None, state, config)
+}
+
 pub fn manage_window(
   native_window: NativeWindow,
   target_parent: Option<Container>,
@@ -28,6 +54,24 @@ pub fn manage_window(
   else {
     return Ok(());
   };
+
+  // When `multi_monitor_workspaces` is disabled, windows on a monitor
+  // without a displayed workspace (i.e. a non-primary monitor) stay
+  // OS-managed. Register the window so it gets managed once it is moved
+  // onto the primary monitor. An explicit target parent (e.g. from
+  // `WmState::populate`) bypasses this.
+  if target_parent.is_none()
+    && !config.value.general.multi_monitor_workspaces
+  {
+    let is_on_workspaceless_monitor = state
+      .nearest_monitor(&native_window)
+      .is_some_and(|monitor| monitor.displayed_workspace().is_none());
+
+    if is_on_workspaceless_monitor {
+      state.register_native_window_pending_remanage(native_window);
+      return Ok(());
+    }
+  }
 
   // Create the window instance. This may fail if the window handle has
   // already been destroyed.

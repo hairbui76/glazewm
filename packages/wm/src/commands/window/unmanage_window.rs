@@ -1,4 +1,7 @@
 use anyhow::Context;
+#[cfg(target_os = "windows")]
+use wm_platform::NativeWindowWindowsExt;
+use tracing::warn;
 use wm_common::{WindowState, WmEvent};
 
 use crate::{
@@ -6,10 +9,61 @@ use crate::{
     detach_container, flatten_child_split_containers,
     set_focused_descendant,
   },
-  models::WindowContainer,
+  models::{Monitor, WindowContainer},
   traits::{CommonGetters, WindowGetters},
+  user_config::UserConfig,
   wm_state::WmState,
 };
+
+/// Resizes the native window to the monitor workspace area (outer gaps and
+/// working area), matching a single tiled window, before the WM detaches.
+///
+/// Best-effort: logs and continues on failure so unmanage still runs.
+pub(crate) fn snap_native_window_to_external_monitor_workspace(
+  window: &WindowContainer,
+  monitor: &Monitor,
+  config: &UserConfig,
+) {
+  if let Err(err) =
+    try_snap_native_window_to_external_monitor_workspace(
+      window, monitor, config,
+    )
+  {
+    warn!(
+      ?err,
+      "Failed to snap window to workspace extent before unmanage"
+    );
+  }
+}
+
+fn try_snap_native_window_to_external_monitor_workspace(
+  window: &WindowContainer,
+  monitor: &Monitor,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let tiling_rect =
+    monitor.max_workspace_rect_from_gaps(&config.value.gaps);
+  let frame =
+    tiling_rect.apply_delta(&window.total_border_delta()?, None);
+
+  #[cfg(target_os = "windows")]
+  {
+    let should_restore = window.native().is_minimized()?
+      || window.native().is_maximized()?;
+
+    if should_restore {
+      window.native().restore(Some(&frame))?;
+    }
+  }
+
+  window.native().set_frame(&frame)?;
+
+  window.update_native_properties(|properties| {
+    properties.frame = frame;
+  });
+
+  Ok(())
+}
 
 #[allow(clippy::needless_pass_by_value)]
 pub fn unmanage_window(

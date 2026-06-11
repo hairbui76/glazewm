@@ -12,7 +12,10 @@ use wm_platform::{NativeWindow, Rect};
 use crate::{
   commands::{
     container::{flatten_split_container, move_container_within_tree},
-    window::{unmanage_window, update_window_state},
+    window::{
+      manage_window, snap_native_window_to_external_monitor_workspace,
+      unmanage_window, update_window_state,
+    },
   },
   events::handle_window_moved_or_resized_end,
   models::{Monitor, NonTilingWindow, WindowContainer},
@@ -31,8 +34,17 @@ pub fn handle_window_moved_or_resized(
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   is_interactive_end: bool,
   state: &mut WmState,
-  config: &UserConfig,
+  config: &mut UserConfig,
 ) -> anyhow::Result<()> {
+  if is_interactive_start {
+    state.native_windows_in_interactive_move.insert(native_window.id());
+  }
+  if is_interactive_end {
+    state
+      .native_windows_in_interactive_move
+      .remove(&native_window.id());
+  }
+
   let found_window = state.window_from_native(native_window);
 
   if let Some(window) = found_window {
@@ -205,6 +217,12 @@ pub fn handle_window_moved_or_resized(
     if !config.value.general.multi_monitor_workspaces
       && nearest_monitor.displayed_workspace().is_none()
     {
+      state.register_native_window_pending_remanage(window.native().clone());
+      snap_native_window_to_external_monitor_workspace(
+        &window,
+        &nearest_monitor,
+        config,
+      );
       unmanage_window(window.clone(), state)?;
       return Ok(());
     }
@@ -367,9 +385,140 @@ pub fn handle_window_moved_or_resized(
       }
       _ => {}
     }
+  } else if !state.is_paused
+    && !state.ignored_windows.contains(native_window)
+  {
+    maybe_remanage_native_window_after_move_to_primary(
+      native_window,
+      is_interactive_start,
+      is_interactive_end,
+      state,
+      config,
+    )?;
   }
 
   Ok(())
+}
+
+/// Called when OS reports move/resize for a window `GlazeWM` does not track,
+/// after the user finishes an interactive move.
+///
+/// When `multi_monitor_workspaces` is off, unmanaged windows normally live on
+/// non-primary monitors; once the window is on the primary display again,
+/// attach it. Qualifying handles sit in `WmState::native_windows_pending_remanage`.
+///
+/// # Platform-specific
+///
+/// - **Windows**: `Win+Shift+Arrow` issues `EVENT_OBJECT_LOCATIONCHANGE` only
+///   (no move-size start/end). That path is accepted when the window is not in
+///   an active `EVENT_SYSTEM_MOVESIZE*` session.
+/// - **macOS**: Interactive end is inferred from the left mouse button.
+fn maybe_remanage_native_window_after_move_to_primary(
+  native_window: &NativeWindow,
+  is_interactive_start: bool,
+  is_interactive_end: bool,
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<()> {
+  if config.value.general.multi_monitor_workspaces {
+    return Ok(());
+  }
+
+  if !should_attempt_pending_remanage_after_move(
+    native_window,
+    is_interactive_start,
+    is_interactive_end,
+    state,
+  ) {
+    return Ok(());
+  }
+
+  let Some(nearest_monitor) = state.nearest_monitor(native_window)
+  else {
+    return Ok(());
+  };
+
+  if nearest_monitor.displayed_workspace().is_none() {
+    return Ok(());
+  }
+
+  if !state.take_native_window_pending_remanage(native_window) {
+    return Ok(());
+  }
+
+  manage_window(native_window.clone(), None, state, config)
+}
+
+/// Whether an unmanaged window may be re-attached after a move (drag release,
+/// or a purely programmatic reposition such as `Win+Shift+Arrow` on Windows).
+fn should_attempt_pending_remanage_after_move(
+  native_window: &NativeWindow,
+  is_interactive_start: bool,
+  is_interactive_end: bool,
+  state: &WmState,
+) -> bool {
+  if move_interactive_finished(is_interactive_end, state) {
+    return true;
+  }
+
+  programmatic_move_may_complete_pending_remanage(
+    native_window,
+    is_interactive_start,
+    is_interactive_end,
+    state,
+  )
+}
+
+/// Windows: location-only changes while not in a move-size session (e.g.
+/// `Win+Shift+Arrow` between monitors).
+#[cfg(target_os = "windows")]
+fn programmatic_move_may_complete_pending_remanage(
+  native_window: &NativeWindow,
+  is_interactive_start: bool,
+  is_interactive_end: bool,
+  state: &WmState,
+) -> bool {
+  !is_interactive_start
+    && !is_interactive_end
+    && !state
+      .native_windows_in_interactive_move
+      .contains(&native_window.id())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn programmatic_move_may_complete_pending_remanage(
+  native_window: &NativeWindow,
+  is_interactive_start: bool,
+  is_interactive_end: bool,
+  state: &WmState,
+) -> bool {
+  let _ = (native_window, is_interactive_start, is_interactive_end, state);
+
+  false
+}
+
+/// Mirrors drag-end detection used for managed windows in this module.
+fn move_interactive_finished(
+  is_interactive_end: bool,
+  #[cfg_attr(target_os = "windows", allow(unused_variables))]
+  state: &WmState,
+) -> bool {
+  #[cfg(target_os = "windows")]
+  {
+    is_interactive_end
+  }
+  #[cfg(target_os = "macos")]
+  {
+    use wm_platform::MouseButton;
+
+    !state.dispatcher.is_mouse_down(&MouseButton::Left)
+  }
+  #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+  {
+    let _ = (is_interactive_end, state);
+
+    false
+  }
 }
 
 // TODO: Move to shared location. `handle_window_moved_or_resized_end.rs`

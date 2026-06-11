@@ -34,12 +34,7 @@ pub fn activate_workspace(
   // When multi-monitor workspaces are disabled, every workspace must live
   // on the configured primary monitor regardless of `bind_to_monitor` or
   // the explicit target monitor passed in.
-  let target_monitor = if !config.value.general.multi_monitor_workspaces
-  {
-    state
-      .primary_monitor(config)
-      .context("Failed to get the primary monitor.")?
-  } else {
+  let target_monitor = if config.value.general.multi_monitor_workspaces {
     target_monitor
       .or_else(|| {
         workspace_config
@@ -57,6 +52,10 @@ pub fn activate_workspace(
           })
       })
       .context("Failed to get a target monitor for the workspace.")?
+  } else {
+    state
+      .primary_monitor(config)
+      .context("Failed to get the primary monitor.")?
   };
 
   let monitor_rect = target_monitor.to_rect()?;

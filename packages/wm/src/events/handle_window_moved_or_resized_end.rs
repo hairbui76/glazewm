@@ -7,7 +7,10 @@ use wm_platform::{LengthValue, Point, Rect};
 use crate::{
   commands::{
     container::{move_container_within_tree, wrap_in_split_container},
-    window::{set_window_size, unmanage_window, update_window_state},
+    window::{
+      set_window_size, snap_native_window_to_external_monitor_workspace,
+      unmanage_window, update_window_state,
+    },
   },
   events::update_floating_window_position,
   models::{
@@ -58,6 +61,14 @@ pub fn handle_window_moved_or_resized_end(
         && nearest_monitor.displayed_workspace().is_none()
       {
         window.set_active_drag(None);
+        state.register_native_window_pending_remanage(
+          window.native().clone(),
+        );
+        snap_native_window_to_external_monitor_workspace(
+          &window.as_window_container()?,
+          &nearest_monitor,
+          config,
+        );
         unmanage_window(window.as_window_container()?, state)?;
         return Ok(());
       }

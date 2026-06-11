@@ -43,8 +43,8 @@ general:
   # Whether workspaces can span multiple monitors.
   # - 'true': Each monitor manages its own workspaces (default).
   # - 'false': Only the primary monitor receives workspaces. Windows on
-  #   external monitors are still managed but appear on the primary
-  #   monitor's workspace.
+  #   other monitors are left unmanaged (OS-controlled) and get managed
+  #   automatically once moved onto the primary monitor.
   multi_monitor_workspaces: true
 
   # Optional monitor hardware identifier. When unset, the leftmost monitor
@@ -254,6 +254,11 @@ keybindings:
   # Minimize focused window.
   - commands: ['toggle-minimized']
     bindings: ['alt+m']
+
+  # Stop ignoring the OS foreground window and manage it again (focus that
+  # window first; it cannot be WM-focused while ignored).
+  - commands: ['manage']
+    bindings: ['alt+shift+n']
 
   # Close focused window.
   - commands: ['close']
