@@ -6,7 +6,10 @@ use wm_platform::{NativeWindow, RectDelta};
 use crate::{
   commands::{
     container::{attach_container, set_focused_descendant},
-    window::run_window_rules,
+    window::{
+      run_window_rules,
+      snap_new_native_window_to_external_monitor_workspace,
+    },
   },
   models::{
     Container, NativeWindowProperties, NonTilingWindow, TilingWindow,
@@ -63,11 +66,20 @@ pub fn manage_window(
   if target_parent.is_none()
     && !config.value.general.multi_monitor_workspaces
   {
-    let is_on_workspaceless_monitor = state
+    let workspaceless_monitor = state
       .nearest_monitor(&native_window)
-      .is_some_and(|monitor| monitor.displayed_workspace().is_none());
+      .filter(|monitor| monitor.displayed_workspace().is_none());
 
-    if is_on_workspaceless_monitor {
+    if let Some(monitor) = workspaceless_monitor {
+      // Snap the window to the monitor's single-window workspace extent so
+      // it fills the screen like a tiled window, matching the
+      // move/unmanage path, then leave it OS-managed.
+      snap_new_native_window_to_external_monitor_workspace(
+        &native_window,
+        &monitor,
+        config,
+      );
+
       state.register_native_window_pending_remanage(native_window);
       return Ok(());
     }
