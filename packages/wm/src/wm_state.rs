@@ -17,6 +17,7 @@ use crate::{
     general::platform_sync,
     monitor::{add_monitor, move_bounded_workspaces_to_new_monitor},
     window::{manage_window, unmanage_window},
+    workspace::activate_workspace,
   },
   models::{
     Container, Monitor, NativeMonitorProperties, RootContainer,
@@ -169,6 +170,14 @@ impl WmState {
       move_bounded_workspaces_to_new_monitor(&monitor, self, config)?;
     }
 
+    // When `multi_monitor_workspaces` is disabled, minimized windows on
+    // the primary monitor are deferred and spread across workspaces
+    // afterwards (see `distribute_minimized_windows_across_workspaces`)
+    // instead of being left minimized.
+    let distribute_minimized =
+      !config.value.general.multi_monitor_workspaces;
+    let mut minimized_windows = Vec::new();
+
     // Manage windows in reverse z-order (bottom to top). This helps to
     // preserve the original stacking order.
     for native_window in
@@ -179,12 +188,18 @@ impl WmState {
         .and_then(|m| m.displayed_workspace());
 
       if let Some(workspace) = nearest_workspace {
-        manage_window(
-          native_window,
-          Some(workspace.into()),
-          self,
-          config,
-        )?;
+        if distribute_minimized
+          && native_window.is_minimized().unwrap_or(false)
+        {
+          minimized_windows.push(native_window);
+        } else {
+          manage_window(
+            native_window,
+            Some(workspace.into()),
+            self,
+            config,
+          )?;
+        }
       } else if !config.value.general.multi_monitor_workspaces {
         // The window is on a monitor without workspaces (i.e. a
         // non-primary monitor with `multi_monitor_workspaces: false`).
@@ -194,6 +209,11 @@ impl WmState {
         self.register_native_window_pending_remanage(native_window);
       }
     }
+
+    self.distribute_minimized_windows_across_workspaces(
+      minimized_windows,
+      config,
+    )?;
 
     let container_to_focus = focused_window
       .and_then(|focused_window| {
@@ -217,6 +237,82 @@ impl WmState {
 
     platform_sync(self, config)?;
     self.has_initialized = true;
+
+    Ok(())
+  }
+
+  /// Restores each minimized window and attaches it to its own workspace,
+  /// one window per configured workspace in order. Any windows beyond the
+  /// number of configured workspaces are piled into the last workspace.
+  ///
+  /// Used on startup (with `multi_monitor_workspaces` disabled) so that
+  /// minimized windows on the primary monitor are spread across workspaces
+  /// as tiling windows instead of being left minimized. Target workspaces
+  /// are activated on demand.
+  ///
+  /// Best-effort: a window that fails to attach is skipped so the rest are
+  /// still placed.
+  fn distribute_minimized_windows_across_workspaces(
+    &mut self,
+    windows: Vec<NativeWindow>,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    if windows.is_empty() {
+      return Ok(());
+    }
+
+    // Configured workspace names, in config order.
+    let workspace_names = config
+      .value
+      .workspaces
+      .iter()
+      .map(|workspace_config| workspace_config.name.clone())
+      .collect::<Vec<_>>();
+
+    // No workspaces configured; nothing to distribute into.
+    let Some(last_index) = workspace_names.len().checked_sub(1) else {
+      return Ok(());
+    };
+
+    for (index, native_window) in windows.into_iter().enumerate() {
+      // Overflow windows are piled into the last workspace.
+      let target_name = &workspace_names[index.min(last_index)];
+
+      // Resolve the target workspace, activating it if it isn't active.
+      let workspace = match self.workspace_by_name(target_name) {
+        Some(workspace) => workspace,
+        None => {
+          let primary_monitor = self.primary_monitor(config);
+
+          activate_workspace(
+            Some(target_name),
+            primary_monitor,
+            self,
+            config,
+          )?;
+
+          match self.workspace_by_name(target_name) {
+            Some(workspace) => workspace,
+            None => {
+              warn!(
+                "Workspace '{target_name}' missing after activation; \
+                 skipping minimized window."
+              );
+              continue;
+            }
+          }
+        }
+      };
+
+      // Restore the window so it is managed as a tiling window rather than
+      // staying minimized.
+      #[cfg(target_os = "windows")]
+      if let Err(err) = native_window.restore(None) {
+        warn!(?err, "Failed to restore minimized window before managing.");
+      }
+
+      manage_window(native_window, Some(workspace.into()), self, config)?;
+    }
 
     Ok(())
   }

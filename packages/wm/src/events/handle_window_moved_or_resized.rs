@@ -383,6 +383,14 @@ pub fn handle_window_moved_or_resized(
           )?;
         }
       }
+      WindowState::Tiling => {
+        // A tiling window must occupy its layout slot. Reaching here means
+        // its frame changed without an interactive drag (handled earlier),
+        // e.g. an application restoring its own saved geometry shortly
+        // after startup. Snap it back to the slot. The duplicate-event
+        // guard above stops this once the window matches its slot again.
+        state.pending_sync.queue_container_to_redraw(window.clone());
+      }
       _ => {}
     }
   } else if !state.is_paused
