@@ -214,10 +214,37 @@ pub fn handle_window_moved_or_resized(
     // moved to a monitor with no workspace (i.e. a non-primary monitor),
     // unmanage it immediately — before any state checks — so it is not
     // snapped back to the primary monitor on the next workspace switch.
+    //
+    // Hidden windows are exempt: their OS position is not meaningful for
+    // monitor membership (the OS can move them around while a monitor is
+    // being connected), and unmanaging a cloaked window would leave it
+    // permanently invisible.
+    let is_shown = matches!(
+      window.display_state(),
+      DisplayState::Shown | DisplayState::Showing
+    );
+
     if !config.value.general.multi_monitor_workspaces
+      && is_shown
       && nearest_monitor.displayed_workspace().is_none()
     {
-      state.register_native_window_pending_remanage(window.native().clone());
+      // A display topology change (e.g. plugging in a monitor) makes the
+      // OS transiently push managed windows onto the freshly added,
+      // workspaceless monitor. Unmanaging them here would start an
+      // unmanage/re-manage feedback loop (the snap and the WM's still
+      // in-flight async repositions echo back as more moves), flickering
+      // the window between monitors until it stops responding. While the
+      // change settles, just re-assert the window's slot instead; genuine
+      // user moves onto the monitor are handled once settling ends.
+      if state.is_display_change_settling() {
+        state.pending_sync.queue_container_to_redraw(window.clone());
+        return Ok(());
+      }
+
+      state.register_native_window_pending_remanage(
+        window.native().clone(),
+        Some(nearest_monitor.id()),
+      );
       snap_native_window_to_external_monitor_workspace(
         &window,
         &nearest_monitor,
@@ -415,6 +442,14 @@ pub fn handle_window_moved_or_resized(
 /// non-primary monitors; once the window is on the primary display again,
 /// attach it. Qualifying handles sit in `WmState::native_windows_pending_remanage`.
 ///
+/// Programmatic moves are ignored while a snap from a prior unmanage is
+/// still settling, or while a display settings change is settling:
+/// repositions issued with `SWP_ASYNCWINDOWPOS` before the window was
+/// unmanaged can land afterwards, and the OS reshuffles windows when a
+/// monitor is (dis)connected. Re-managing on such a transient move bounces
+/// the window between monitors indefinitely (notably when the OS restores
+/// windows to a re-plugged monitor). Interactive drag ends always proceed.
+///
 /// # Platform-specific
 ///
 /// - **Windows**: `Win+Shift+Arrow` issues `EVENT_OBJECT_LOCATIONCHANGE` only
@@ -432,12 +467,24 @@ fn maybe_remanage_native_window_after_move_to_primary(
     return Ok(());
   }
 
-  if !should_attempt_pending_remanage_after_move(
-    native_window,
-    is_interactive_start,
-    is_interactive_end,
-    state,
-  ) {
+  let is_interactive_finish =
+    move_interactive_finished(is_interactive_end, state);
+
+  let is_programmatic_move = !is_interactive_finish
+    && programmatic_move_may_complete_pending_remanage(
+      native_window,
+      is_interactive_start,
+      is_interactive_end,
+      state,
+    );
+
+  if !is_interactive_finish && !is_programmatic_move {
+    return Ok(());
+  }
+
+  // Don't re-manage on transient OS moves while a display change settles;
+  // the window is bounced around the new topology and would flicker.
+  if is_programmatic_move && state.is_display_change_settling() {
     return Ok(());
   }
 
@@ -445,6 +492,15 @@ fn maybe_remanage_native_window_after_move_to_primary(
   else {
     return Ok(());
   };
+
+  if is_programmatic_move
+    && state.is_pending_remanage_snap_settling(
+      native_window,
+      nearest_monitor.id(),
+    )
+  {
+    return Ok(());
+  }
 
   if nearest_monitor.displayed_workspace().is_none() {
     return Ok(());
@@ -455,26 +511,6 @@ fn maybe_remanage_native_window_after_move_to_primary(
   }
 
   manage_window(native_window.clone(), None, state, config)
-}
-
-/// Whether an unmanaged window may be re-attached after a move (drag release,
-/// or a purely programmatic reposition such as `Win+Shift+Arrow` on Windows).
-fn should_attempt_pending_remanage_after_move(
-  native_window: &NativeWindow,
-  is_interactive_start: bool,
-  is_interactive_end: bool,
-  state: &WmState,
-) -> bool {
-  if move_interactive_finished(is_interactive_end, state) {
-    return true;
-  }
-
-  programmatic_move_may_complete_pending_remanage(
-    native_window,
-    is_interactive_start,
-    is_interactive_end,
-    state,
-  )
 }
 
 /// Windows: location-only changes while not in a move-size session (e.g.

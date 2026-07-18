@@ -82,7 +82,10 @@ pub fn manage_window(
         config,
       ) == WindowState::Tiling;
 
-      if would_be_tiled && !is_owned_secondary_window(&native_window) {
+      let should_snap =
+        would_be_tiled && !is_owned_secondary_window(&native_window);
+
+      if should_snap {
         // Snap the window to the monitor's single-window workspace extent
         // so it fills the screen like a tiled window, matching the
         // move/unmanage path, then leave it OS-managed.
@@ -93,7 +96,10 @@ pub fn manage_window(
         );
       }
 
-      state.register_native_window_pending_remanage(native_window);
+      state.register_native_window_pending_remanage(
+        native_window,
+        should_snap.then(|| monitor.id()),
+      );
       return Ok(());
     }
   }

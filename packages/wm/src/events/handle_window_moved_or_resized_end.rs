@@ -63,6 +63,7 @@ pub fn handle_window_moved_or_resized_end(
         window.set_active_drag(None);
         state.register_native_window_pending_remanage(
           window.native().clone(),
+          Some(nearest_monitor.id()),
         );
         snap_native_window_to_external_monitor_workspace(
           &window.as_window_container()?,

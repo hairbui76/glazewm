@@ -13,7 +13,9 @@ pub fn handle_window_destroyed(
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   state.native_windows_in_interactive_move.remove(&native_window_id);
-  state.native_windows_pending_remanage.retain(|w| w.id() != native_window_id);
+  state
+    .native_windows_pending_remanage
+    .retain(|entry| entry.window.id() != native_window_id);
 
   let found_window = state
     .windows()
