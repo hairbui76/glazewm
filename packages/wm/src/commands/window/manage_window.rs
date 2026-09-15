@@ -164,10 +164,10 @@ pub fn manage_window(
 
 /// Whether the window is a secondary window owned by another window.
 ///
-/// These are dialogs and pickers spawned by an application (e.g. VSCode's
-/// "Open File" or Word's "Paragraph" options) rather than an application's
-/// main window. Such windows should keep their natural size instead of
-/// being auto-tiled to fill a monitor.
+/// These are dialogs and pickers spawned by an application (e.g.
+/// `VSCode`'s "Open File" or Word's "Paragraph" options) rather than an
+/// application's main window. Such windows should keep their natural size
+/// instead of being auto-tiled to fill a monitor.
 ///
 /// A window is considered secondary if it has an owner window.
 fn is_owned_secondary_window(native_window: &NativeWindow) -> bool {

@@ -433,9 +433,10 @@ impl WmState {
       let target_name = &workspace_names[index.min(last_index)];
 
       // Resolve the target workspace, activating it if it isn't active.
-      let workspace = match self.workspace_by_name(target_name) {
-        Some(workspace) => workspace,
-        None => {
+      let workspace =
+        if let Some(workspace) = self.workspace_by_name(target_name) {
+          workspace
+        } else {
           let primary_monitor = self.primary_monitor(config);
 
           activate_workspace(
@@ -445,18 +446,16 @@ impl WmState {
             config,
           )?;
 
-          match self.workspace_by_name(target_name) {
-            Some(workspace) => workspace,
-            None => {
-              warn!(
-                "Workspace '{target_name}' missing after activation; \
-                 skipping minimized window."
-              );
-              continue;
-            }
-          }
-        }
-      };
+          let Some(workspace) = self.workspace_by_name(target_name) else {
+            warn!(
+              "Workspace '{target_name}' missing after activation; \
+             skipping minimized window."
+            );
+            continue;
+          };
+
+          workspace
+        };
 
       // Restore the window so it is managed as a tiling window rather than
       // staying minimized.
@@ -1024,6 +1023,32 @@ impl WmState {
   }
 }
 
+impl Drop for WmState {
+  fn drop(&mut self) {
+    let managed_windows = self.windows();
+
+    for window in &managed_windows {
+      // Redraw windows to their intended positions.
+      if let Ok(rect) = window.to_rect() {
+        if let Err(err) = window.native().set_frame(&rect) {
+          warn!("Failed to redraw window on cleanup: {:?}", err);
+        }
+      }
+
+      // Reset any effects on Windows.
+      if let Err(err) = window.native().show() {
+        warn!("Failed to show window: {:?}", err);
+      }
+
+      let _ = window.native().set_taskbar_visibility(true);
+      let _ = window.native().set_border_color(None);
+      let _ = window
+        .native()
+        .set_transparency(&OpacityValue::from_alpha(u8::MAX));
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1037,14 +1062,14 @@ mod tests {
 
   #[test]
   fn snap_guard_settles_on_target_monitor() {
-    let guard = guard_expiring_in(Duration::from_secs(60));
+    let guard = guard_expiring_in(Duration::from_mins(1));
 
     assert!(guard.is_settled(guard.monitor_id, true, Instant::now()));
   }
 
   #[test]
   fn snap_guard_settles_when_target_monitor_removed() {
-    let guard = guard_expiring_in(Duration::from_secs(60));
+    let guard = guard_expiring_in(Duration::from_mins(1));
     let other_monitor_id = Uuid::new_v4();
 
     assert!(guard.is_settled(other_monitor_id, false, Instant::now()));
@@ -1052,7 +1077,7 @@ mod tests {
 
   #[test]
   fn snap_guard_settles_after_expiry() {
-    let guard = guard_expiring_in(Duration::from_secs(60));
+    let guard = guard_expiring_in(Duration::from_mins(1));
     let other_monitor_id = Uuid::new_v4();
 
     assert!(guard.is_settled(
@@ -1064,7 +1089,7 @@ mod tests {
 
   #[test]
   fn snap_guard_holds_while_unsettled() {
-    let guard = guard_expiring_in(Duration::from_secs(60));
+    let guard = guard_expiring_in(Duration::from_mins(1));
     let other_monitor_id = Uuid::new_v4();
 
     assert!(!guard.is_settled(other_monitor_id, true, Instant::now()));
@@ -1089,31 +1114,5 @@ mod tests {
     state.note_display_change();
 
     assert!(state.is_display_change_settling());
-  }
-}
-
-impl Drop for WmState {
-  fn drop(&mut self) {
-    let managed_windows = self.windows();
-
-    for window in &managed_windows {
-      // Redraw windows to their intended positions.
-      if let Ok(rect) = window.to_rect() {
-        if let Err(err) = window.native().set_frame(&rect) {
-          warn!("Failed to redraw window on cleanup: {:?}", err);
-        }
-      }
-
-      // Reset any effects on Windows.
-      if let Err(err) = window.native().show() {
-        warn!("Failed to show window: {:?}", err);
-      }
-
-      let _ = window.native().set_taskbar_visibility(true);
-      let _ = window.native().set_border_color(None);
-      let _ = window
-        .native()
-        .set_transparency(&OpacityValue::from_alpha(u8::MAX));
-    }
   }
 }

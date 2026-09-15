@@ -333,7 +333,7 @@ pub fn handle_window_moved_or_resized(
         // guard above stops this once the window matches its slot again.
         state.pending_sync.queue_container_to_redraw(window.clone());
       }
-      _ => {}
+      WindowState::Minimized => {}
     }
   } else if !state.is_paused
     && !state.ignored_windows.contains(native_window)

@@ -71,15 +71,11 @@ async fn debounce_loop(
 ) {
   // Block until the first event of a burst arrives.
   while raw_rx.recv().await.is_some() {
-    // Keep draining until there is a quiet gap, coalescing the burst.
-    loop {
-      match tokio::time::timeout(DEBOUNCE_DURATION, raw_rx.recv()).await {
-        // Another change arrived within the window; keep waiting.
-        Ok(Some(())) => continue,
-        // Quiet gap reached (`Err`) or channel closed (`Ok(None)`).
-        Ok(None) | Err(_) => break,
-      }
-    }
+    // Keep draining until a quiet gap is reached (`Err`) or the channel
+    // closes (`Ok(None)`), coalescing the burst.
+    while let Ok(Some(())) =
+      tokio::time::timeout(DEBOUNCE_DURATION, raw_rx.recv()).await
+    {}
 
     // Surface a single coalesced event; stop if no consumer remains.
     if event_tx.send(()).is_err() {
