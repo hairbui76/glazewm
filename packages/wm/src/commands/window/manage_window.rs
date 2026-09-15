@@ -1,7 +1,10 @@
 use anyhow::Context;
 use tracing::info;
 use wm_common::{try_warn, WindowRuleEvent, WindowState, WmEvent};
-use wm_platform::{NativeWindow, Rect, RectDelta};
+use wm_platform::{
+  NativeWindow, NativeWindowWindowsExt, Rect, RectDelta, WS_CAPTION,
+  WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+};
 
 use crate::{
   commands::{
@@ -166,22 +169,9 @@ pub fn manage_window(
 /// main window. Such windows should keep their natural size instead of
 /// being auto-tiled to fill a monitor.
 ///
-/// # Platform-specific
-///
-/// - **Windows**: A window is considered secondary if it has an owner
-///   window.
-/// - **macOS**: Always `false` (ownership is not tracked the same way).
+/// A window is considered secondary if it has an owner window.
 fn is_owned_secondary_window(native_window: &NativeWindow) -> bool {
-  #[cfg(target_os = "windows")]
-  {
-    use wm_platform::NativeWindowWindowsExt;
-    native_window.has_owner_window()
-  }
-  #[cfg(not(target_os = "windows"))]
-  {
-    let _ = native_window;
-    false
-  }
+  native_window.has_owner_window()
 }
 
 /// Checks if a window is manageable and retrieves its native properties.
@@ -195,55 +185,34 @@ fn check_is_manageable(
     return Ok(None);
   }
 
-  #[cfg(target_os = "macos")]
-  {
-    use wm_platform::NativeWindowExtMacOs;
-
-    let is_standard_window = native_window.role()? == "AXWindow"
-      && native_window.subrole()? == "AXStandardWindow";
-
-    if !is_standard_window {
-      return Ok(None);
-    }
-  }
-
   // Ensure window has a valid process name, title, etc.
   let native_properties = NativeWindowProperties::try_from(native_window)?;
 
-  #[cfg(target_os = "windows")]
-  {
-    use wm_platform::{
-      NativeWindowWindowsExt, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE,
-      WS_EX_TOOLWINDOW,
-    };
+  // TODO: Temporary fix for managing Flow Launcher until a force manage
+  // command is added.
+  let is_flow_launcher = native_properties.process_name == "Flow.Launcher"
+    && native_properties.title == "Flow.Launcher";
 
-    // TODO: Temporary fix for managing Flow Launcher until a force manage
-    // command is added.
-    let is_flow_launcher = native_properties.process_name
-      == "Flow.Launcher"
-      && native_properties.title == "Flow.Launcher";
+  if !is_flow_launcher {
+    // Ensure window is top-level (i.e. not a child window). Ignore
+    // windows that cannot be focused or if they're unavailable in
+    // task switcher (alt+tab menu).
+    if native_window.has_window_style(WS_CHILD)
+      || native_window
+        .has_window_style_ex(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+    {
+      return Ok(None);
+    }
 
-    if !is_flow_launcher {
-      // Ensure window is top-level (i.e. not a child window). Ignore
-      // windows that cannot be focused or if they're unavailable in
-      // task switcher (alt+tab menu).
-      if native_window.has_window_style(WS_CHILD)
-        || native_window
-          .has_window_style_ex(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
-      {
-        return Ok(None);
-      }
-
-      // Some applications spawn top-level windows for menus that
-      // should be ignored. This includes the autocomplete popup in
-      // Notepad++ and title bar menu in Keepass. Although not
-      // foolproof, these can typically be identified by having an
-      // owner window and no title bar.
-      if native_window.has_owner_window()
-        && !native_window.has_window_style(WS_CAPTION)
-      {
-        return Ok(None);
-      }
+    // Some applications spawn top-level windows for menus that
+    // should be ignored. This includes the autocomplete popup in
+    // Notepad++ and title bar menu in Keepass. Although not
+    // foolproof, these can typically be identified by having an
+    // owner window and no title bar.
+    if native_window.has_owner_window()
+      && !native_window.has_window_style(WS_CAPTION)
+    {
+      return Ok(None);
     }
   }
 

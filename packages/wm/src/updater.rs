@@ -1,7 +1,4 @@
 //! Self-update support backed by GitHub releases.
-//!
-//! Only available on Windows, since the release pipeline currently only
-//! publishes Windows installers.
 
 use std::{
   path::{Path, PathBuf},

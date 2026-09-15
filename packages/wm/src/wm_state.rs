@@ -9,10 +9,9 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
 use wm_platform::{
-  Direction, Dispatcher, Display, NativeWindow, Point, Rect, WindowId,
+  Direction, Dispatcher, Display, NativeWindow, NativeWindowWindowsExt,
+  OpacityValue, Point, Rect, WindowId,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::{NativeWindowWindowsExt, OpacityValue};
 
 use crate::{
   commands::{
@@ -461,7 +460,6 @@ impl WmState {
 
       // Restore the window so it is managed as a tiling window rather than
       // staying minimized.
-      #[cfg(target_os = "windows")]
       if let Err(err) = native_window.restore(None) {
         warn!(?err, "Failed to restore minimized window before managing.");
       }
@@ -503,33 +501,12 @@ impl WmState {
   /// Whether this monitor matches `general.primary_monitor_hardware_id` in
   /// config.
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Compares against the EDID-derived hardware ID.
-  /// - **macOS**: Compares against the CoreGraphics display UUID.
-  #[cfg(target_os = "windows")]
+  /// Compares against the EDID-derived hardware ID.
   fn monitor_matches_primary_hardware_id(
     monitor: &Monitor,
     id: &str,
   ) -> bool {
     monitor.native_properties().hardware_id.as_deref() == Some(id)
-  }
-
-  #[cfg(target_os = "macos")]
-  fn monitor_matches_primary_hardware_id(
-    monitor: &Monitor,
-    id: &str,
-  ) -> bool {
-    monitor.native_properties().device_uuid == id
-  }
-
-  #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-  fn monitor_matches_primary_hardware_id(
-    monitor: &Monitor,
-    id: &str,
-  ) -> bool {
-    let _ = (monitor, id);
-    false
   }
 
   pub fn workspaces(&self) -> Vec<Workspace> {
@@ -1120,8 +1097,7 @@ impl Drop for WmState {
     let managed_windows = self.windows();
 
     for window in &managed_windows {
-      // Redraw windows to their intended positions. On macOS, this will
-      // unhide windows that are on other workspaces.
+      // Redraw windows to their intended positions.
       if let Ok(rect) = window.to_rect() {
         if let Err(err) = window.native().set_frame(&rect) {
           warn!("Failed to redraw window on cleanup: {:?}", err);
@@ -1129,18 +1105,15 @@ impl Drop for WmState {
       }
 
       // Reset any effects on Windows.
-      #[cfg(target_os = "windows")]
-      {
-        if let Err(err) = window.native().show() {
-          warn!("Failed to show window: {:?}", err);
-        }
-
-        let _ = window.native().set_taskbar_visibility(true);
-        let _ = window.native().set_border_color(None);
-        let _ = window
-          .native()
-          .set_transparency(&OpacityValue::from_alpha(u8::MAX));
+      if let Err(err) = window.native().show() {
+        warn!("Failed to show window: {:?}", err);
       }
+
+      let _ = window.native().set_taskbar_visibility(true);
+      let _ = window.native().set_border_color(None);
+      let _ = window
+        .native()
+        .set_transparency(&OpacityValue::from_alpha(u8::MAX));
     }
   }
 }

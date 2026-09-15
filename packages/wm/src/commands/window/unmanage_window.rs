@@ -1,9 +1,7 @@
 use anyhow::Context;
 use tracing::warn;
 use wm_common::{WindowState, WmEvent};
-use wm_platform::NativeWindow;
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
+use wm_platform::{NativeWindow, NativeWindowWindowsExt};
 
 use crate::{
   commands::container::{
@@ -44,14 +42,11 @@ fn try_snap_native_window_to_external_monitor_workspace(
     monitor.max_workspace_rect_from_gaps(&config.value.gaps);
   let frame = tiling_rect.apply_delta(&window.total_border_delta()?, None);
 
-  #[cfg(target_os = "windows")]
-  {
-    let should_restore =
-      window.native().is_minimized()? || window.native().is_maximized()?;
+  let should_restore =
+    window.native().is_minimized()? || window.native().is_maximized()?;
 
-    if should_restore {
-      window.native().restore(Some(&frame))?;
-    }
+  if should_restore {
+    window.native().restore(Some(&frame))?;
   }
 
   window.native().set_frame(&frame)?;
@@ -107,17 +102,11 @@ fn try_snap_new_native_window_to_external_monitor_workspace(
   // with `RectDelta::zero()` borders). Without this, the OS places the
   // window's shadow-inclusive frame inside the tiling rect, leaving the
   // visible window slightly smaller than the workspace extent.
-  #[cfg(target_os = "windows")]
   let frame =
     tiling_rect.apply_delta(&native_window.shadow_borders()?, None);
-  #[cfg(not(target_os = "windows"))]
-  let frame = tiling_rect;
 
-  #[cfg(target_os = "windows")]
-  {
-    if native_window.is_minimized()? || native_window.is_maximized()? {
-      native_window.restore(Some(&frame))?;
-    }
+  if native_window.is_minimized()? || native_window.is_maximized()? {
+    native_window.restore(Some(&frame))?;
   }
 
   native_window.set_frame(&frame)?;

@@ -3,11 +3,7 @@ use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
   FloatingStateConfig, FullscreenStateConfig, HideMethod, WindowState,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
-#[cfg(target_os = "macos")]
-use wm_platform::{LengthValue, MouseButton, RectDelta};
-use wm_platform::{NativeWindow, Rect};
+use wm_platform::{NativeWindow, NativeWindowWindowsExt, Rect};
 
 use crate::{
   commands::{
@@ -27,11 +23,7 @@ use crate::{
 #[allow(clippy::too_many_lines)]
 pub fn handle_window_moved_or_resized(
   native_window: &NativeWindow,
-  // LINT: `is_interactive_start` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   is_interactive_start: bool,
-  // LINT: `is_interactive_end` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   is_interactive_end: bool,
   state: &mut WmState,
   config: &mut UserConfig,
@@ -59,28 +51,9 @@ pub fn handle_window_moved_or_resized(
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
-      let is_drag_end = {
-        // On Windows, the drag operation has ended when
-        // `is_interactive_end` is `true`. This corresponds to a
-        // `EVENT_SYSTEM_MOVESIZEEND` event, which is unavailable on macOS.
-        #[cfg(target_os = "windows")]
-        {
-          is_interactive_end
-        }
-        // On macOS, the drag operation has ended when the mouse button is
-        // no longer down. This is a fallback mechanism since for macOS,
-        // `is_interactive_end` is always `false`. The `MouseEvent` handler
-        // also catches `MouseButtonUp` events, but this provides
-        // additional safety.
-        // TODO: Can probably remove this check and rely 100% on the mouse
-        // event handler.
-        #[cfg(target_os = "macos")]
-        {
-          !state.dispatcher.is_mouse_down(&MouseButton::Left)
-        }
-      };
-
-      if is_drag_end {
+      // The drag operation has ended when `is_interactive_end` is
+      // `true`, which corresponds to an `EVENT_SYSTEM_MOVESIZEEND` event.
+      if is_interactive_end {
         return handle_window_moved_or_resized_end(&window, state, config);
       }
 
@@ -107,14 +80,11 @@ pub fn handle_window_moved_or_resized(
     // If the window is not maximized, update its cached shadow borders.
     // Maximized windows temporarily have 0 shadow borders, in which case
     // we should use its previous value for redraws.
-    #[cfg(target_os = "windows")]
-    {
-      let shadow_borders = try_warn!(window.native().shadow_borders());
-      if !is_maximized {
-        window.update_native_properties(|properties| {
-          properties.shadow_borders = shadow_borders;
-        });
-      }
+    let shadow_borders = try_warn!(window.native().shadow_borders());
+    if !is_maximized {
+      window.update_native_properties(|properties| {
+        properties.shadow_borders = shadow_borders;
+      });
     }
 
     let is_minimized = try_warn!(window.native().is_minimized());
@@ -128,57 +98,10 @@ pub fn handle_window_moved_or_resized(
     // Detect whether the window is starting to be interactively moved or
     // resized by the user (e.g. via the window's drag handles).
     let is_drag_start = !state.is_paused && {
-      #[cfg(target_os = "windows")]
-      {
-        // Drag events can be valid for all window states apart from
-        // minimized.
-        is_interactive_start
-          && !matches!(window.state(), WindowState::Minimized)
-      }
-      #[cfg(target_os = "macos")]
-      {
-        // Drag events are never valid for minimized or maximized windows.
-        let is_valid_state = !matches!(
-          window.state(),
-          WindowState::Fullscreen(FullscreenStateConfig {
-            maximized: true,
-            ..
-          }) | WindowState::Minimized
-        );
-
-        let is_dragging_other_window =
-          state.windows().iter().any(|w| w.active_drag().is_some());
-
-        let is_left_click =
-          state.dispatcher.is_mouse_down(&MouseButton::Left);
-
-        // Only consider the window to be dragging if:
-        //  1. The window is not minimized or maximized.
-        //  2. No other window is being dragged.
-        //  3. Left-click is down.
-        //  4. The cursor is within 40px margin around the window's frame.
-        if is_valid_state && !is_dragging_other_window && is_left_click {
-          // The window frame can lag behind the cursor when moving or
-          // resizing quickly, so allow for a bit of leeway.
-          let frame_to_check = frame_position.apply_delta(
-            &RectDelta::new(
-              LengthValue::from_px(40),
-              LengthValue::from_px(40),
-              LengthValue::from_px(40),
-              LengthValue::from_px(40),
-            ),
-            None,
-          );
-
-          // TODO: Might be more robust to also check if the window under
-          // the cursor (i.e. via `dispatcher.window_from_point`) is not a
-          // different window.
-          let cursor_position = state.dispatcher.cursor_position()?;
-          frame_to_check.contains_point(&cursor_position)
-        } else {
-          false
-        }
-      }
+      // Drag events can be valid for all window states apart from
+      // minimized.
+      is_interactive_start
+        && !matches!(window.state(), WindowState::Minimized)
     };
 
     if is_drag_start {
@@ -190,19 +113,9 @@ pub fn handle_window_moved_or_resized(
           window.state(),
           WindowState::Floating(_)
         ),
-        #[cfg(target_os = "windows")]
         initial_position: old_frame_position.clone(),
-        // The updated frame position is used here instead of the initial
-        // frame position due to a quirk on macOS. When we resize an
-        // AXUIElement to a value outside the allowed min/max width &
-        // height, macOS doesn't actually apply that size. However, it
-        // still reports the value we attempted to set until a subsequent
-        // `WindowEvent::MovedOrResized` event.
-        #[cfg(target_os = "macos")]
-        initial_position: frame_position.clone(),
       }));
 
-      #[cfg(target_os = "windows")]
       update_drag_state(&window, &frame_position, state, config)?;
 
       return Ok(());
@@ -455,10 +368,9 @@ pub fn handle_window_moved_or_resized(
 ///
 /// # Platform-specific
 ///
-/// - **Windows**: `Win+Shift+Arrow` issues `EVENT_OBJECT_LOCATIONCHANGE`
-///   only (no move-size start/end). That path is accepted when the window
-///   is not in an active `EVENT_SYSTEM_MOVESIZE*` session.
-/// - **macOS**: Interactive end is inferred from the left mouse button.
+/// `Win+Shift+Arrow` issues `EVENT_OBJECT_LOCATIONCHANGE` only (no
+/// move-size start/end). That path is accepted when the window is not in
+/// an active `EVENT_SYSTEM_MOVESIZE*` session.
 fn maybe_remanage_native_window_after_move_to_primary(
   native_window: &NativeWindow,
   is_interactive_start: bool,
@@ -517,7 +429,6 @@ fn maybe_remanage_native_window_after_move_to_primary(
 
 /// Windows: location-only changes while not in a move-size session (e.g.
 /// `Win+Shift+Arrow` between monitors).
-#[cfg(target_os = "windows")]
 fn programmatic_move_may_complete_pending_remanage(
   native_window: &NativeWindow,
   is_interactive_start: bool,
@@ -531,45 +442,12 @@ fn programmatic_move_may_complete_pending_remanage(
       .contains(&native_window.id())
 }
 
-#[cfg(not(target_os = "windows"))]
-fn programmatic_move_may_complete_pending_remanage(
-  native_window: &NativeWindow,
-  is_interactive_start: bool,
-  is_interactive_end: bool,
-  state: &WmState,
-) -> bool {
-  let _ = (
-    native_window,
-    is_interactive_start,
-    is_interactive_end,
-    state,
-  );
-
-  false
-}
-
 /// Mirrors drag-end detection used for managed windows in this module.
 fn move_interactive_finished(
   is_interactive_end: bool,
-  #[cfg_attr(target_os = "windows", allow(unused_variables))]
-  state: &WmState,
+  #[allow(unused_variables)] state: &WmState,
 ) -> bool {
-  #[cfg(target_os = "windows")]
-  {
-    is_interactive_end
-  }
-  #[cfg(target_os = "macos")]
-  {
-    use wm_platform::MouseButton;
-
-    !state.dispatcher.is_mouse_down(&MouseButton::Left)
-  }
-  #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-  {
-    let _ = (is_interactive_end, state);
-
-    false
-  }
+  is_interactive_end
 }
 
 // TODO: Move to shared location. `handle_window_moved_or_resized_end.rs`
@@ -744,9 +622,8 @@ fn is_in_corner(window_frame: &Rect, monitor_rect: &Rect) -> bool {
   let is_right_corner =
     (window_frame.x() + VISIBLE_SLIVER_PX - monitor_rect.right).abs() <= 1;
 
-  // On macOS, the window's title bar is prevented from being positioned
-  // outside of monitor's working area, so we need to allow ~55px of
-  // vertical leeway. Title bar height varies, but can be up to 52px.
+  // Allow ~55px of vertical leeway, since a window's title bar can be up
+  // to 52px tall.
   // TODO: See if possible to make this dynamic based on the window's title
   // bar height.
   let is_bottom_of_monitor =

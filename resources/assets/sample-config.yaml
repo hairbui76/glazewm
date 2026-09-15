@@ -28,10 +28,10 @@ general:
     trigger: 'monitor_focus'
 
   # How windows should be hidden when switching workspaces.
-  # - 'cloak': (Windows-only) Recommended option for Windows.
-  # - 'hide': (Windows-only) Legacy option for Windows. Has stability issues with some apps.
+  # - 'cloak': Recommended option.
+  # - 'hide': Legacy option. Has stability issues with some apps.
   # - 'place_in_corner': Artifically hides the window by placing it in the corner of the
-  #   monitor. On macOS, this is always used instead of cloak/hide.
+  #   monitor.
   hide_method: 'cloak'
 
   # Affects which windows get shown in the native Windows taskbar. Has no
@@ -50,8 +50,8 @@ general:
   # Optional monitor hardware identifier. When unset, the leftmost monitor
   # (sorted by position) is used. Useful with `multi_monitor_workspaces: false`
   # to pin workspaces to a specific display (e.g. the laptop panel) regardless
-  # of geometry. Run `glazewm query monitors` and copy `hardwareId` (Windows:
-  # EDID string; macOS: display UUID).
+  # of geometry. Run `glazewm query monitors` and copy `hardwareId` (the
+  # monitor's EDID string).
   # primary_monitor_hardware_id: 'LEN403A'
 
 gaps:

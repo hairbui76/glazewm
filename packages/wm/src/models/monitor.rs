@@ -162,21 +162,10 @@ impl Monitor {
       y: rect.y(),
       dpi: self.native_properties().dpi,
       scale_factor: self.native_properties().scale_factor,
-      #[cfg(target_os = "windows")]
       handle: Some(self.native_properties().handle),
-      #[cfg(not(target_os = "windows"))]
-      handle: None,
       device_name: self.native_properties().device_name,
-      #[cfg(target_os = "windows")]
       device_path: self.native_properties().device_path,
-      #[cfg(not(target_os = "windows"))]
-      device_path: None,
-      #[cfg(target_os = "windows")]
       hardware_id: self.native_properties().hardware_id,
-      #[cfg(target_os = "macos")]
-      hardware_id: Some(self.native_properties().device_uuid.clone()),
-      #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-      hardware_id: None,
       working_rect: self.native_properties().working_area,
       // Defaults to `false`; populated via `set_is_primary_on_dto` at
       // call sites that have access to `UserConfig`.
