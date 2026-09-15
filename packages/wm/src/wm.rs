@@ -337,7 +337,9 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
-      InvokeCommand::Manage => manage_foreground_native_window(state, config),
+      InvokeCommand::Manage => {
+        manage_foreground_native_window(state, config)
+      }
       InvokeCommand::Move(args) => {
         match subject_container.as_window_container() {
           Ok(window) => {

@@ -7,8 +7,10 @@ use wm_common::{WindowRuleEvent, WmEvent};
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::monitor::sync_workspaces_to_monitor_topology,
-  commands::{window::run_window_rules, workspace::sort_workspaces},
+  commands::{
+    monitor::sync_workspaces_to_monitor_topology,
+    window::run_window_rules, workspace::sort_workspaces,
+  },
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm::WindowManager,

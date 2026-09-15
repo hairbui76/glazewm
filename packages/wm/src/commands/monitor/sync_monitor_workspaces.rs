@@ -52,7 +52,12 @@ pub fn consolidate_non_primary_workspaces_onto_primary(
     .collect();
 
   for workspace in workspaces_on_secondary {
-    move_workspace_to_monitor(&workspace, &primary_monitor, state, config)?;
+    move_workspace_to_monitor(
+      &workspace,
+      &primary_monitor,
+      state,
+      config,
+    )?;
   }
 
   Ok(())

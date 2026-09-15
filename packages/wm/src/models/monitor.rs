@@ -100,17 +100,15 @@ impl Monitor {
   /// Bounds matching `Workspace::max_workspace_rect` for this monitor when
   /// using the given gap configuration.
   ///
-  /// Used when positioning a window that is about to be released to the OS on
-  /// a monitor that has no WM workspace (for example when
+  /// Used when positioning a window that is about to be released to the OS
+  /// on a monitor that has no WM workspace (for example when
   /// `multi_monitor_workspaces` is disabled).
   pub fn max_workspace_rect_from_gaps(
     &self,
     gaps_config: &GapsConfig,
   ) -> Rect {
-    let multi_window_rect = self.rect_with_outer_gap(
-      &gaps_config.outer_gap,
-      gaps_config,
-    );
+    let multi_window_rect =
+      self.rect_with_outer_gap(&gaps_config.outer_gap, gaps_config);
 
     let Some(single_gap) = &gaps_config.single_window_outer_gap else {
       return multi_window_rect;
@@ -122,7 +120,8 @@ impl Monitor {
     multi_window_rect.union(&single_window_rect)
   }
 
-  /// Workspace client area for this monitor with a specific outer gap delta.
+  /// Workspace client area for this monitor with a specific outer gap
+  /// delta.
   fn rect_with_outer_gap(
     &self,
     outer_gap: &RectDelta,
@@ -135,10 +134,8 @@ impl Monitor {
     };
 
     let monitor_bounds = self.native_properties().bounds;
-    let working_area_delta = self
-      .native_properties()
-      .working_area
-      .delta(&monitor_bounds);
+    let working_area_delta =
+      self.native_properties().working_area.delta(&monitor_bounds);
 
     monitor_bounds
       .apply_delta(&outer_gap.inverse(), Some(scale_factor))
@@ -178,10 +175,7 @@ impl Monitor {
       hardware_id: self.native_properties().hardware_id,
       #[cfg(target_os = "macos")]
       hardware_id: Some(self.native_properties().device_uuid.clone()),
-      #[cfg(all(
-        not(target_os = "windows"),
-        not(target_os = "macos")
-      ))]
+      #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
       hardware_id: None,
       working_rect: self.native_properties().working_area,
       // Defaults to `false`; populated via `set_is_primary_on_dto` at

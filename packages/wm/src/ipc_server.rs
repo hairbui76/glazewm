@@ -198,10 +198,8 @@ impl IpcServer {
           })
         }
         QueryCommand::Monitors => {
-          let primary_id = wm
-            .state
-            .primary_monitor(config)
-            .map(|m| m.id());
+          let primary_id =
+            wm.state.primary_monitor(config).map(|m| m.id());
 
           ClientResponseData::Monitors(MonitorsData {
             monitors: wm

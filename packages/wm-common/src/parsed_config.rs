@@ -99,9 +99,9 @@ pub struct GeneralConfig {
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
 
-  /// Whether workspaces can span multiple monitors. When `false`, only the
-  /// primary monitor receives workspaces; external monitors are left
-  /// unmanaged.
+  /// Whether workspaces can span multiple monitors. When `false`, only
+  /// the primary monitor receives workspaces; external monitors are
+  /// left unmanaged.
   pub multi_monitor_workspaces: bool,
 
   /// Optional stable identifier of the monitor to treat as the primary
@@ -109,8 +109,9 @@ pub struct GeneralConfig {
   /// primary. This determines which monitor receives workspaces when
   /// `multi_monitor_workspaces` is `false`.
   ///
-  /// On Windows, set this to the EDID-derived hardware ID. On macOS, set this
-  /// to the CoreGraphics display UUID (`hardwareId` in `glazewm query monitors`).
+  /// On Windows, set this to the EDID-derived hardware ID. On macOS, set
+  /// this to the CoreGraphics display UUID (`hardwareId` in `glazewm
+  /// query monitors`).
   #[serde(alias = "hardwareId")]
   pub primary_monitor_hardware_id: Option<String>,
 }

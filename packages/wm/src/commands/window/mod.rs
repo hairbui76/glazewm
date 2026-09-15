@@ -18,7 +18,6 @@ pub use run_window_rules::*;
 pub use set_window_position::*;
 pub use set_window_size::*;
 pub use unmanage_window::unmanage_window;
-
 pub(crate) use unmanage_window::{
   snap_native_window_to_external_monitor_workspace,
   snap_new_native_window_to_external_monitor_workspace,

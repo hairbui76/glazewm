@@ -23,8 +23,8 @@ use crate::{
 /// Clears ignore for the OS foreground window and runs `manage_window` if
 /// it is not already managed.
 ///
-/// Call this after the user focuses the previously ignored window; keybindings
-/// cannot target ignored windows via WM focus.
+/// Call this after the user focuses the previously ignored window;
+/// keybindings cannot target ignored windows via WM focus.
 pub fn manage_foreground_native_window(
   state: &mut WmState,
   config: &mut UserConfig,
@@ -163,12 +163,13 @@ pub fn manage_window(
 ///
 /// These are dialogs and pickers spawned by an application (e.g. VSCode's
 /// "Open File" or Word's "Paragraph" options) rather than an application's
-/// main window. Such windows should keep their natural size instead of being
-/// auto-tiled to fill a monitor.
+/// main window. Such windows should keep their natural size instead of
+/// being auto-tiled to fill a monitor.
 ///
 /// # Platform-specific
 ///
-/// - **Windows**: A window is considered secondary if it has an owner window.
+/// - **Windows**: A window is considered secondary if it has an owner
+///   window.
 /// - **macOS**: Always `false` (ownership is not tracked the same way).
 fn is_owned_secondary_window(native_window: &NativeWindow) -> bool {
   #[cfg(target_os = "windows")]
@@ -369,8 +370,8 @@ fn create_window(
 ///
 /// `max_workspace_rect` is the maximum bounds of the workspace the window
 /// would be placed in; it is passed in (rather than derived from a
-/// `Workspace`) so this can be computed for a monitor that has no displayed
-/// workspace.
+/// `Workspace`) so this can be computed for a monitor that has no
+/// displayed workspace.
 ///
 /// Note that maximized windows are initialized as tiling.
 fn window_state_to_create(
@@ -390,7 +391,10 @@ fn window_state_to_create(
   // needs to be within the workspace's outer gaps by at least 1px on each
   // side.
   if !native_properties.is_maximized
-    && native_properties.frame.inset(1).contains_rect(max_workspace_rect)
+    && native_properties
+      .frame
+      .inset(1)
+      .contains_rect(max_workspace_rect)
   {
     return WindowState::Fullscreen(
       config

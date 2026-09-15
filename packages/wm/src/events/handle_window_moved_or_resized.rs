@@ -37,7 +37,9 @@ pub fn handle_window_moved_or_resized(
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
   if is_interactive_start {
-    state.native_windows_in_interactive_move.insert(native_window.id());
+    state
+      .native_windows_in_interactive_move
+      .insert(native_window.id());
   }
   if is_interactive_end {
     state
@@ -435,12 +437,13 @@ pub fn handle_window_moved_or_resized(
   Ok(())
 }
 
-/// Called when OS reports move/resize for a window `GlazeWM` does not track,
-/// after the user finishes an interactive move.
+/// Called when OS reports move/resize for a window `GlazeWM` does not
+/// track, after the user finishes an interactive move.
 ///
-/// When `multi_monitor_workspaces` is off, unmanaged windows normally live on
-/// non-primary monitors; once the window is on the primary display again,
-/// attach it. Qualifying handles sit in `WmState::native_windows_pending_remanage`.
+/// When `multi_monitor_workspaces` is off, unmanaged windows normally live
+/// on non-primary monitors; once the window is on the primary display
+/// again, attach it. Qualifying handles sit in
+/// `WmState::native_windows_pending_remanage`.
 ///
 /// Programmatic moves are ignored while a snap from a prior unmanage is
 /// still settling, or while a display settings change is settling:
@@ -452,9 +455,9 @@ pub fn handle_window_moved_or_resized(
 ///
 /// # Platform-specific
 ///
-/// - **Windows**: `Win+Shift+Arrow` issues `EVENT_OBJECT_LOCATIONCHANGE` only
-///   (no move-size start/end). That path is accepted when the window is not in
-///   an active `EVENT_SYSTEM_MOVESIZE*` session.
+/// - **Windows**: `Win+Shift+Arrow` issues `EVENT_OBJECT_LOCATIONCHANGE`
+///   only (no move-size start/end). That path is accepted when the window
+///   is not in an active `EVENT_SYSTEM_MOVESIZE*` session.
 /// - **macOS**: Interactive end is inferred from the left mouse button.
 fn maybe_remanage_native_window_after_move_to_primary(
   native_window: &NativeWindow,
@@ -488,8 +491,7 @@ fn maybe_remanage_native_window_after_move_to_primary(
     return Ok(());
   }
 
-  let Some(nearest_monitor) = state.nearest_monitor(native_window)
-  else {
+  let Some(nearest_monitor) = state.nearest_monitor(native_window) else {
     return Ok(());
   };
 
@@ -536,7 +538,12 @@ fn programmatic_move_may_complete_pending_remanage(
   is_interactive_end: bool,
   state: &WmState,
 ) -> bool {
-  let _ = (native_window, is_interactive_start, is_interactive_end, state);
+  let _ = (
+    native_window,
+    is_interactive_start,
+    is_interactive_end,
+    state,
+  );
 
   false
 }

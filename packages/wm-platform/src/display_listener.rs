@@ -8,8 +8,8 @@ use crate::{platform_impl, Dispatcher};
 /// single event.
 ///
 /// Connecting monitors or resuming from sleep emits a rapid burst of OS
-/// display messages while the topology settles. Reacting to each one causes
-/// workspaces and windows to be repeatedly reshuffled.
+/// display messages while the topology settles. Reacting to each one
+/// causes workspaces and windows to be repeatedly reshuffled.
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
 
 /// A listener for system-wide display setting changes.
@@ -17,8 +17,8 @@ const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
 /// Detects changes to display configuration including resolution changes,
 /// display connections/disconnections, and working area changes.
 ///
-/// Bursts of changes are debounced: a single event is surfaced only once no
-/// further change has been seen for `DEBOUNCE_DURATION`.
+/// Bursts of changes are debounced: a single event is surfaced only once
+/// no further change has been seen for `DEBOUNCE_DURATION`.
 pub struct DisplayListener {
   event_rx: mpsc::UnboundedReceiver<()>,
 
@@ -46,7 +46,8 @@ impl DisplayListener {
     Ok(Self { event_rx, inner })
   }
 
-  /// Returns when the next (debounced) display settings change is detected.
+  /// Returns when the next (debounced) display settings change is
+  /// detected.
   ///
   /// Returns `None` if the channel has been closed.
   pub async fn next_event(&mut self) -> Option<()> {
@@ -59,8 +60,9 @@ impl DisplayListener {
   }
 }
 
-/// Coalesces bursts of raw display change events, emitting a single event on
-/// `event_tx` once `DEBOUNCE_DURATION` elapses without a further change.
+/// Coalesces bursts of raw display change events, emitting a single event
+/// on `event_tx` once `DEBOUNCE_DURATION` elapses without a further
+/// change.
 ///
 /// Returns when either channel closes.
 async fn debounce_loop(

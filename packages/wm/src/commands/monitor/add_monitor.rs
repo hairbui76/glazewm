@@ -105,8 +105,8 @@ pub fn move_bounded_workspaces_to_new_monitor(
 /// configured primary monitor when `multi_monitor_workspaces` is disabled.
 ///
 /// `keep_alive` workspace configs that are bound to the given monitor are
-/// activated on the primary monitor instead. Existing workspaces already on
-/// the given monitor are moved to the primary. The fallback workspace
+/// activated on the primary monitor instead. Existing workspaces already
+/// on the given monitor are moved to the primary. The fallback workspace
 /// creation is intentionally skipped so the non-primary monitor stays
 /// workspace-free.
 fn move_bounded_workspaces_to_primary(
@@ -123,9 +123,9 @@ fn move_bounded_workspaces_to_primary(
     .workspaces
     .iter()
     .filter(|cfg| {
-      cfg.bind_to_monitor.is_some_and(|i| {
-        i as usize == monitor.index()
-      })
+      cfg
+        .bind_to_monitor
+        .is_some_and(|i| i as usize == monitor.index())
     })
     .collect::<Vec<_>>();
 

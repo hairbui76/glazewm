@@ -1,9 +1,9 @@
 use anyhow::Context;
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
 use tracing::warn;
 use wm_common::{WindowState, WmEvent};
 use wm_platform::NativeWindow;
+#[cfg(target_os = "windows")]
+use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   commands::container::{
@@ -25,11 +25,9 @@ pub(crate) fn snap_native_window_to_external_monitor_workspace(
   monitor: &Monitor,
   config: &UserConfig,
 ) {
-  if let Err(err) =
-    try_snap_native_window_to_external_monitor_workspace(
-      window, monitor, config,
-    )
-  {
+  if let Err(err) = try_snap_native_window_to_external_monitor_workspace(
+    window, monitor, config,
+  ) {
     warn!(
       ?err,
       "Failed to snap window to workspace extent before unmanage"
@@ -44,13 +42,12 @@ fn try_snap_native_window_to_external_monitor_workspace(
 ) -> anyhow::Result<()> {
   let tiling_rect =
     monitor.max_workspace_rect_from_gaps(&config.value.gaps);
-  let frame =
-    tiling_rect.apply_delta(&window.total_border_delta()?, None);
+  let frame = tiling_rect.apply_delta(&window.total_border_delta()?, None);
 
   #[cfg(target_os = "windows")]
   {
-    let should_restore = window.native().is_minimized()?
-      || window.native().is_maximized()?;
+    let should_restore =
+      window.native().is_minimized()? || window.native().is_maximized()?;
 
     if should_restore {
       window.native().restore(Some(&frame))?;

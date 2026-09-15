@@ -126,14 +126,15 @@ pub struct WmState {
   /// `ignore` command.
   pub ignored_windows: Vec<NativeWindow>,
 
-  /// Windows `GlazeWM` released with `multi_monitor_workspaces: false` so they
-  /// could stay on a display without workspaces. Attempt to `manage_window`
-  /// again when the user finishes moving one onto the primary monitor.
+  /// Windows `GlazeWM` released with `multi_monitor_workspaces: false` so
+  /// they could stay on a display without workspaces. Attempt to
+  /// `manage_window` again when the user finishes moving one onto the
+  /// primary monitor.
   pub(crate) native_windows_pending_remanage: Vec<PendingRemanage>,
 
-  /// Windows-only: `HWND`s with an active `EVENT_SYSTEM_MOVESIZE*` session so
-  /// `EVENT_OBJECT_LOCATIONCHANGE` can be told apart from Win+Shift+Arrow
-  /// moves (location-only, no interactive start/end).
+  /// Windows-only: `HWND`s with an active `EVENT_SYSTEM_MOVESIZE*`
+  /// session so `EVENT_OBJECT_LOCATIONCHANGE` can be told apart from
+  /// Win+Shift+Arrow moves (location-only, no interactive start/end).
   pub(crate) native_windows_in_interactive_move: HashSet<WindowId>,
 
   /// When the most recent display settings change was observed.
@@ -207,9 +208,9 @@ impl WmState {
   /// back) starts a monitor-to-monitor flicker loop, so callers use this
   /// to fall back to simply re-asserting each window's slot.
   pub(crate) fn is_display_change_settling(&self) -> bool {
-    self.last_display_change_at.is_some_and(|at| {
-      at.elapsed() < Self::DISPLAY_CHANGE_SETTLE_TIMEOUT
-    })
+    self
+      .last_display_change_at
+      .is_some_and(|at| at.elapsed() < Self::DISPLAY_CHANGE_SETTLE_TIMEOUT)
   }
 
   /// Registers a native handle for possible re-management once it is moved
@@ -234,8 +235,8 @@ impl WmState {
     });
   }
 
-  /// If `native_window` is registered for re-management, drops that entry and
-  /// returns `true`.
+  /// If `native_window` is registered for re-management, drops that entry
+  /// and returns `true`.
   pub(crate) fn take_native_window_pending_remanage(
     &mut self,
     native_window: &NativeWindow,
@@ -271,8 +272,9 @@ impl WmState {
       return false;
     };
 
-    let Some(guard) =
-      self.native_windows_pending_remanage[index].snap_guard.clone()
+    let Some(guard) = self.native_windows_pending_remanage[index]
+      .snap_guard
+      .clone()
     else {
       return false;
     };
@@ -476,13 +478,10 @@ impl WmState {
 
   /// Gets the primary monitor based on the user config.
   ///
-  /// If `general.primary_monitor_hardware_id` is set, returns the monitor whose
-  /// hardware ID or display UUID matches (see config docs). Otherwise, falls back
-  /// to the leftmost monitor (index 0).
-  pub fn primary_monitor(
-    &self,
-    config: &UserConfig,
-  ) -> Option<Monitor> {
+  /// If `general.primary_monitor_hardware_id` is set, returns the monitor
+  /// whose hardware ID or display UUID matches (see config docs).
+  /// Otherwise, falls back to the leftmost monitor (index 0).
+  pub fn primary_monitor(&self, config: &UserConfig) -> Option<Monitor> {
     let monitors = self.monitors();
 
     if let Some(id) =
@@ -501,7 +500,8 @@ impl WmState {
     monitors.into_iter().next()
   }
 
-  /// Whether this monitor matches `general.primary_monitor_hardware_id` in config.
+  /// Whether this monitor matches `general.primary_monitor_hardware_id` in
+  /// config.
   ///
   /// # Platform-specific
   ///
@@ -512,11 +512,7 @@ impl WmState {
     monitor: &Monitor,
     id: &str,
   ) -> bool {
-    monitor
-      .native_properties()
-      .hardware_id
-      .as_deref()
-      == Some(id)
+    monitor.native_properties().hardware_id.as_deref() == Some(id)
   }
 
   #[cfg(target_os = "macos")]
