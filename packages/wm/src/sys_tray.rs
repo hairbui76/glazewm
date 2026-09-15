@@ -23,6 +23,8 @@ enum TrayMenuId {
   #[cfg(target_os = "windows")]
   ToggleWindowAnimations,
   RunOnStartup,
+  #[cfg(target_os = "windows")]
+  CheckForUpdate,
   Exit,
 }
 
@@ -36,6 +38,8 @@ impl Display for TrayMenuId {
         write!(f, "toggle_window_animations")
       }
       TrayMenuId::RunOnStartup => write!(f, "run_on_startup"),
+      #[cfg(target_os = "windows")]
+      TrayMenuId::CheckForUpdate => write!(f, "check_for_update"),
       TrayMenuId::Exit => write!(f, "exit"),
     }
   }
@@ -51,6 +55,8 @@ impl FromStr for TrayMenuId {
       #[cfg(target_os = "windows")]
       "toggle_window_animations" => Ok(Self::ToggleWindowAnimations),
       "run_on_startup" => Ok(Self::RunOnStartup),
+      #[cfg(target_os = "windows")]
+      "check_for_update" => Ok(Self::CheckForUpdate),
       "exit" => Ok(Self::Exit),
       _ => anyhow::bail!("Invalid tray menu event: {}", event),
     }
@@ -168,6 +174,14 @@ impl SystemTray {
       None,
     );
 
+    #[cfg(target_os = "windows")]
+    let check_for_update_item = MenuItem::with_id(
+      TrayMenuId::CheckForUpdate,
+      "Check for updates",
+      true,
+      None,
+    );
+
     let exit_item =
       MenuItem::with_id(TrayMenuId::Exit, "Exit", true, None);
 
@@ -179,6 +193,8 @@ impl SystemTray {
       &toggle_animations_item,
       &run_on_startup_item,
       &PredefinedMenuItem::separator(),
+      #[cfg(target_os = "windows")]
+      &check_for_update_item,
       &exit_item,
     ])?;
 
@@ -265,6 +281,11 @@ impl SystemTray {
         }
 
         *run_on_startup_enabled = !*run_on_startup_enabled;
+        Ok(())
+      }
+      #[cfg(target_os = "windows")]
+      TrayMenuId::CheckForUpdate => {
+        crate::updater::check_for_updates(dispatcher, exit_tx);
         Ok(())
       }
       TrayMenuId::Exit => {

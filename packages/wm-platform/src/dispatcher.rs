@@ -10,7 +10,9 @@ use std::{
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSAlert, NSAlertStyle, NSEvent};
+use objc2_app_kit::{
+  NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSEvent,
+};
 #[cfg(target_os = "macos")]
 use objc2_application_services::{
   kAXTrustedCheckOptionPrompt, AXIsProcessTrustedWithOptions,
@@ -37,10 +39,10 @@ use windows::{
       },
       WindowsAndMessaging::{
         GetCursorPos, MessageBoxW, SetCursorPos, SystemParametersInfoW,
-        ANIMATIONINFO, MB_ICONERROR, MB_OK, MB_SYSTEMMODAL,
-        SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_GETANIMATION,
-        SPI_SETANIMATION, SW_HIDE, SW_NORMAL,
-        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        ANIMATIONINFO, IDYES, MB_ICONERROR, MB_ICONINFORMATION,
+        MB_ICONQUESTION, MB_OK, MB_SYSTEMMODAL, MB_YESNO, SPIF_SENDCHANGE,
+        SPIF_UPDATEINIFILE, SPI_GETANIMATION, SPI_SETANIMATION, SW_HIDE,
+        SW_NORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
       },
     },
   },
@@ -667,8 +669,46 @@ impl Dispatcher {
   /// Shows a modal error dialog with the given title and message.
   ///
   /// Blocks the current thread until the user dismisses the dialog.
-  #[allow(clippy::missing_panics_doc)]
   pub fn show_error_dialog(&self, title: &str, message: &str) {
+    self.show_dialog(title, message, DialogKind::Error);
+  }
+
+  /// Shows a modal informational dialog with the given title and message.
+  ///
+  /// Blocks the current thread until the user dismisses the dialog.
+  pub fn show_info_dialog(&self, title: &str, message: &str) {
+    self.show_dialog(title, message, DialogKind::Info);
+  }
+
+  /// Shows a modal confirmation dialog with "Yes" and "No" buttons.
+  ///
+  /// Blocks the current thread until the user answers the dialog.
+  ///
+  /// Returns `true` if the user confirmed, otherwise `false`.
+  #[must_use]
+  pub fn show_confirm_dialog(&self, title: &str, message: &str) -> bool {
+    self.show_dialog(title, message, DialogKind::Confirm)
+  }
+
+  /// Shows a modal dialog of the given kind.
+  ///
+  /// Returns `true` only if the user confirmed a [`DialogKind::Confirm`]
+  /// dialog.
+  ///
+  /// # Platform-specific
+  ///
+  /// - **Windows**: Uses a system-modal `MessageBoxW`, which can be shown
+  ///   from any thread.
+  /// - **macOS**: Uses an `NSAlert`, which is dispatched onto the event
+  ///   loop thread since it must be shown from the main thread.
+  // LINT: `self` is only used on macOS.
+  #[cfg_attr(target_os = "windows", allow(clippy::unused_self))]
+  fn show_dialog(
+    &self,
+    title: &str,
+    message: &str,
+    kind: DialogKind,
+  ) -> bool {
     #[cfg(target_os = "windows")]
     {
       let title_wide =
@@ -676,30 +716,70 @@ impl Dispatcher {
       let message_wide =
         message.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
 
-      unsafe {
+      let style = MB_SYSTEMMODAL
+        | match kind {
+          DialogKind::Error => MB_ICONERROR | MB_OK,
+          DialogKind::Info => MB_ICONINFORMATION | MB_OK,
+          DialogKind::Confirm => MB_ICONQUESTION | MB_YESNO,
+        };
+
+      // SAFETY: Both strings are null-terminated and outlive the call,
+      // which blocks until the dialog is dismissed.
+      let result = unsafe {
         MessageBoxW(
           None,
           PCWSTR(message_wide.as_ptr()),
           PCWSTR(title_wide.as_ptr()),
-          MB_ICONERROR | MB_OK | MB_SYSTEMMODAL,
-        );
-      }
+          style,
+        )
+      };
+
+      result == IDYES
     }
     #[cfg(target_os = "macos")]
     {
       // TODO: This should block indefinitely. Currently, it gets timed out
       // after 5 seconds.
-      let _ = self.dispatch_sync(|| {
-        let mtm = MainThreadMarker::new().unwrap();
+      self
+        .dispatch_sync(|| {
+          let Some(mtm) = MainThreadMarker::new() else {
+            tracing::error!(
+              "Cannot show dialog outside of the main thread."
+            );
+            return false;
+          };
 
-        let alert = NSAlert::new(mtm);
-        alert.setMessageText(&NSString::from_str(title));
-        alert.setInformativeText(&NSString::from_str(message));
-        alert.setAlertStyle(NSAlertStyle::Critical);
-        alert.runModal();
-      });
+          let alert = NSAlert::new(mtm);
+          alert.setMessageText(&NSString::from_str(title));
+          alert.setInformativeText(&NSString::from_str(message));
+          alert.setAlertStyle(match kind {
+            DialogKind::Error => NSAlertStyle::Critical,
+            DialogKind::Info | DialogKind::Confirm => {
+              NSAlertStyle::Informational
+            }
+          });
+
+          if kind == DialogKind::Confirm {
+            alert.addButtonWithTitle(&NSString::from_str("Yes"));
+            alert.addButtonWithTitle(&NSString::from_str("No"));
+          }
+
+          alert.runModal() == NSAlertFirstButtonReturn
+        })
+        .unwrap_or(false)
     }
   }
+}
+
+/// Kind of modal dialog to show to the user.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DialogKind {
+  /// Dialog with an error icon and a single "OK" button.
+  Error,
+  /// Dialog with an info icon and a single "OK" button.
+  Info,
+  /// Dialog with a question icon and "Yes" / "No" buttons.
+  Confirm,
 }
 
 impl std::fmt::Debug for Dispatcher {
