@@ -18,7 +18,12 @@ jobs:
   build:
     uses: ./.github/workflows/build.yaml
     with:
-      enable_ui_access: true
+      # UIAccess requires the executable to be both digitally signed and
+      # installed in a secure location. This repository has no code signing
+      # certificate, and Windows refuses to launch an unsigned executable
+      # that requests UIAccess ("A referral was returned from the server").
+      # Re-enable this if a signing certificate is ever configured.
+      enable_ui_access: false
       version_number: ${{ inputs.version_number }}
 
   package-windows:

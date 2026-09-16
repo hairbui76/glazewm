@@ -54,6 +54,8 @@ irm https://raw.githubusercontent.com/hairbui76/glazewm/main/resources/scripts/i
 
 Once installed, updates can be applied from the system tray via **Check for updates**, which downloads and runs the latest installer for you.
 
+> These builds are not code signed, so Windows SmartScreen warns on first run and UIAccess is disabled. Without UIAccess, GlazeWM cannot position or focus windows belonging to elevated (administrator) processes unless it is run elevated itself.
+
 GlazeWM is also available through several package managers:
 
 **Winget**
