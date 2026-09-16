@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.13.0](https://github.com/hairbui76/glazewm/compare/v3.12.0...v3.13.0) (2026-09-16)
+
+
+### Features
+
+* show the version at the top of the tray menu ([c2861c5](https://github.com/hairbui76/glazewm/commit/c2861c5f47a172fc3618e1a393e42b4488484700))
+
+
+### Bug fixes
+
+* rebuild crates when the version number changes ([d8732a8](https://github.com/hairbui76/glazewm/commit/d8732a8c8f7ebcc10359f75a49e6ba021b000839))
+
 ## [3.12.0](https://github.com/hairbui76/glazewm/compare/v3.11.2...v3.12.0) (2026-09-16)
 
 
