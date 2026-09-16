@@ -53,44 +53,6 @@ function SignFiles() {
   ExitOnError
 }
 
-function DownloadZebarInstallers() {
-  Write-Output "Downloading latest Zebar MSI's"
-
-  $latestRelease = 'https://api.github.com/repos/glzr-io/zebar/releases/latest'
-
-  $headers = @{
-    'Accept' = 'application/vnd.github+json'
-    'User-Agent' = 'glazewm-package'
-    'X-GitHub-Api-Version' = '2022-11-28'
-  }
-
-  # Unauthenticated calls share a 60/hour limit per IP, which CI runners
-  # exhaust quickly. Authenticate whenever a token is available.
-  if (![string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
-    $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN"
-  }
-  else {
-    Write-Output "No GITHUB_TOKEN set; querying the GitHub API anonymously."
-  }
-
-  $latestInstallers = Invoke-RestMethod $latestRelease -Headers $headers |
-    % assets | ? name -like "*.msi"
-
-  $latestInstallers | ForEach-Object {
-    $outFile = Join-Path "out" $_.name
-
-    # Rename the MSI files (e.g. `zebar-1.5.0-opt1-x64.msi` -> `zebar-x64.msi`).
-    if ($_.name -like "*-x64.msi") {
-      $outFile = "out/zebar-x64.msi"
-    }
-    elseif ($_.name -like "*-arm64.msi") {
-      $outFile = "out/zebar-arm64.msi"
-    }
-
-    Invoke-WebRequest $_.browser_download_url -OutFile $outFile
-  }
-}
-
 function BuildExes() {
   # Rust targets to build for (x64 and arm64).
   $rustTargets = @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")
@@ -160,7 +122,6 @@ function Package() {
   Write-Output "Creating output directory"
   New-Item -ItemType Directory -Force -Path "out"
 
-  DownloadZebarInstallers
   BuildExes
   BuildInstallers
 }
