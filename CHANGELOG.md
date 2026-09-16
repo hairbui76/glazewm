@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.12.0](https://github.com/hairbui76/glazewm/compare/v3.11.2...v3.12.0) (2026-09-16)
+
+
+### Features
+
+* stop bundling Zebar in the installer ([5cd15f6](https://github.com/hairbui76/glazewm/commit/5cd15f6d501097cae83cd9ec7dbdf0c0cf5726b5))
+
+
+### Bug fixes
+
+* relaunch the installed executable after updating ([7b345a7](https://github.com/hairbui76/glazewm/commit/7b345a73adbbd7425765626f2252a4b61f344a1b))
+
 ## [3.11.2](https://github.com/hairbui76/glazewm/compare/v3.11.1...v3.11.2) (2026-09-16)
 
 
