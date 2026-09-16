@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.11.2](https://github.com/hairbui76/glazewm/compare/v3.11.1...v3.11.2) (2026-09-16)
+
+
+### Bug fixes
+
+* **ci:** authenticate the Zebar release lookup ([e61d06d](https://github.com/hairbui76/glazewm/commit/e61d06d630f7f15ac120ab52be400424acf93e02))
+
 ## [3.11.1](https://github.com/hairbui76/glazewm/compare/v3.11.0...v3.11.1) (2026-09-16)
 
 
