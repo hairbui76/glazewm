@@ -91,6 +91,79 @@ impl RemanageSnapGuard {
   }
 }
 
+/// Tracks how often a released window has been re-managed
+/// programmatically, so that a window which fights the WM over its own
+/// placement can be left alone instead of bouncing forever.
+///
+/// Some applications move or resize themselves straight back after the WM
+/// has placed them, typically ones with a fixed size or aspect ratio (the
+/// Android emulator, for instance). With `multi_monitor_workspaces`
+/// disabled that becomes an endless release/re-manage tug-of-war: the WM
+/// pulls the window onto the primary monitor, the application puts it
+/// back, and every round is a fresh location change that drives the next
+/// one.
+#[derive(Debug)]
+struct RemanageChurn {
+  /// The released native window.
+  window: NativeWindow,
+
+  /// Programmatic re-manages counted since `since`.
+  count: u32,
+
+  /// Start of the current counting period.
+  since: Instant,
+
+  /// When the window may be re-managed programmatically again, once it
+  /// has been found to fight back.
+  suppressed_until: Option<Instant>,
+}
+
+impl RemanageChurn {
+  /// Period over which programmatic re-manages are counted.
+  const PERIOD: Duration = Duration::from_secs(3);
+
+  /// Re-manages within `PERIOD` that mark a window as fighting back.
+  const LIMIT: u32 = 4;
+
+  /// How long a window found to be fighting back is left to the OS.
+  const SUPPRESSION: Duration = Duration::from_secs(30);
+
+  fn new(window: NativeWindow, now: Instant) -> Self {
+    Self {
+      window,
+      count: 0,
+      since: now,
+      suppressed_until: None,
+    }
+  }
+
+  /// Whether re-management is currently suppressed.
+  fn is_suppressed(&self, now: Instant) -> bool {
+    self.suppressed_until.is_some_and(|until| now < until)
+  }
+
+  /// Counts one programmatic re-manage, suppressing further ones if the
+  /// window has now exceeded [`Self::LIMIT`] within [`Self::PERIOD`].
+  fn record(&mut self, now: Instant) {
+    // Start counting afresh after a lapsed suppression or a quiet period,
+    // so that an occasional re-manage never accumulates into a false
+    // positive.
+    if self.suppressed_until.is_some()
+      || now.duration_since(self.since) > Self::PERIOD
+    {
+      self.suppressed_until = None;
+      self.count = 0;
+      self.since = now;
+    }
+
+    self.count += 1;
+
+    if self.count >= Self::LIMIT {
+      self.suppressed_until = Some(now + Self::SUPPRESSION);
+    }
+  }
+}
+
 pub struct WmState {
   /// Root node of the container tree. Monitors are the children of the
   /// root node, followed by workspaces, then split containers/windows.
@@ -130,6 +203,10 @@ pub struct WmState {
   /// `manage_window` again when the user finishes moving one onto the
   /// primary monitor.
   pub(crate) native_windows_pending_remanage: Vec<PendingRemanage>,
+
+  /// Re-manage churn per released window, used to stop bouncing windows
+  /// whose application keeps putting them back (see [`RemanageChurn`]).
+  remanage_churn: Vec<RemanageChurn>,
 
   /// Windows-only: `HWND`s with an active `EVENT_SYSTEM_MOVESIZE*`
   /// session so `EVENT_OBJECT_LOCATIONCHANGE` can be told apart from
@@ -177,6 +254,7 @@ impl WmState {
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       native_windows_pending_remanage: Vec::new(),
+      remanage_churn: Vec::new(),
       native_windows_in_interactive_move: HashSet::default(),
       last_display_change_at: None,
       is_paused: false,
@@ -232,6 +310,76 @@ impl WmState {
       window,
       snap_guard: snap_monitor_id.map(RemanageSnapGuard::new),
     });
+  }
+
+  /// Whether programmatic re-management of a released window is currently
+  /// suppressed because the window keeps putting itself back.
+  pub(crate) fn is_remanage_suppressed(
+    &self,
+    native_window: &NativeWindow,
+  ) -> bool {
+    let now = Instant::now();
+
+    self
+      .remanage_churn
+      .iter()
+      .find(|entry| entry.window == *native_window)
+      .is_some_and(|entry| entry.is_suppressed(now))
+  }
+
+  /// Counts a programmatic re-manage of a released window.
+  ///
+  /// Once a window has been re-managed [`RemanageChurn::LIMIT`] times
+  /// within [`RemanageChurn::PERIOD`], further programmatic re-manages are
+  /// suppressed and [`Self::is_remanage_suppressed`] starts reporting
+  /// `true`.
+  pub(crate) fn record_programmatic_remanage(
+    &mut self,
+    native_window: &NativeWindow,
+  ) {
+    let now = Instant::now();
+
+    if !self
+      .remanage_churn
+      .iter()
+      .any(|entry| entry.window == *native_window)
+    {
+      self
+        .remanage_churn
+        .push(RemanageChurn::new(native_window.clone(), now));
+    }
+
+    let Some(entry) = self
+      .remanage_churn
+      .iter_mut()
+      .find(|entry| entry.window == *native_window)
+    else {
+      return;
+    };
+
+    entry.record(now);
+
+    if entry.is_suppressed(now) {
+      warn!(
+        "Window {:?} keeps moving itself back after being placed; \
+         leaving it to the OS for {}s.",
+        native_window.id(),
+        RemanageChurn::SUPPRESSION.as_secs()
+      );
+    }
+  }
+
+  /// Forgets that a window was fighting back over its placement.
+  ///
+  /// Called when the user moves the window themselves, which always takes
+  /// precedence over the suppression.
+  pub(crate) fn clear_remanage_churn(
+    &mut self,
+    native_window: &NativeWindow,
+  ) {
+    self
+      .remanage_churn
+      .retain(|entry| entry.window != *native_window);
   }
 
   /// If `native_window` is registered for re-management, drops that entry
@@ -1019,6 +1167,8 @@ impl WmState {
       .native_windows_pending_remanage
       .retain(|entry| entry.window.is_valid());
 
+    self.remanage_churn.retain(|entry| entry.window.is_valid());
+
     Ok(())
   }
 }
@@ -1052,6 +1202,68 @@ impl Drop for WmState {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn churn_at(now: Instant) -> RemanageChurn {
+    RemanageChurn::new(NativeWindow::mock(), now)
+  }
+
+  #[test]
+  fn churn_allows_occasional_remanages() {
+    let start = Instant::now();
+    let mut churn = churn_at(start);
+
+    for index in 0..RemanageChurn::LIMIT - 1 {
+      churn.record(start + Duration::from_millis(u64::from(index) * 100));
+    }
+
+    assert!(!churn.is_suppressed(start + Duration::from_millis(500)));
+  }
+
+  #[test]
+  fn churn_suppresses_once_the_limit_is_reached() {
+    let start = Instant::now();
+    let mut churn = churn_at(start);
+
+    for index in 0..RemanageChurn::LIMIT {
+      churn.record(start + Duration::from_millis(u64::from(index) * 100));
+    }
+
+    assert!(churn.is_suppressed(start + Duration::from_millis(500)));
+  }
+
+  #[test]
+  fn churn_resets_after_a_quiet_period() {
+    let start = Instant::now();
+    let mut churn = churn_at(start);
+
+    for index in 0..RemanageChurn::LIMIT - 1 {
+      churn.record(start + Duration::from_millis(u64::from(index) * 100));
+    }
+
+    // A re-manage well after the counting period starts a fresh count
+    // rather than tipping the window over the limit.
+    let later = start + RemanageChurn::PERIOD + Duration::from_secs(1);
+    churn.record(later);
+
+    assert!(!churn.is_suppressed(later));
+  }
+
+  #[test]
+  fn churn_restarts_counting_once_suppression_lapses() {
+    let start = Instant::now();
+    let mut churn = churn_at(start);
+
+    for index in 0..RemanageChurn::LIMIT {
+      churn.record(start + Duration::from_millis(u64::from(index) * 100));
+    }
+
+    let lapsed =
+      start + RemanageChurn::SUPPRESSION + Duration::from_secs(1);
+    assert!(!churn.is_suppressed(lapsed));
+
+    churn.record(lapsed);
+    assert!(!churn.is_suppressed(lapsed));
+  }
 
   fn guard_expiring_in(duration: Duration) -> RemanageSnapGuard {
     RemanageSnapGuard {

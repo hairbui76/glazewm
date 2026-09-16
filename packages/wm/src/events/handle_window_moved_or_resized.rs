@@ -156,15 +156,25 @@ pub fn handle_window_moved_or_resized(
         return Ok(());
       }
 
+      // A window that keeps putting itself back is left at its own size.
+      // Snapping it to the monitor's workspace extent only provokes
+      // another round of the tug-of-war, since such windows reject the
+      // size and resize themselves straight back.
+      let should_snap = !state.is_remanage_suppressed(&window.native());
+
       state.register_native_window_pending_remanage(
         window.native().clone(),
-        Some(nearest_monitor.id()),
+        should_snap.then(|| nearest_monitor.id()),
       );
-      snap_native_window_to_external_monitor_workspace(
-        &window,
-        &nearest_monitor,
-        config,
-      );
+
+      if should_snap {
+        snap_native_window_to_external_monitor_workspace(
+          &window,
+          &nearest_monitor,
+          config,
+        );
+      }
+
       unmanage_window(window.clone(), state)?;
       return Ok(());
     }
@@ -397,6 +407,12 @@ fn maybe_remanage_native_window_after_move_to_primary(
     return Ok(());
   }
 
+  // A move the user made themselves always takes precedence, and clears
+  // any suppression left over from an earlier tug-of-war.
+  if is_interactive_finish {
+    state.clear_remanage_churn(native_window);
+  }
+
   // Don't re-manage on transient OS moves while a display change settles;
   // the window is bounced around the new topology and would flicker.
   if is_programmatic_move && state.is_display_change_settling() {
@@ -420,8 +436,18 @@ fn maybe_remanage_native_window_after_move_to_primary(
     return Ok(());
   }
 
+  // Leave alone a window that has already been pulled back and forth too
+  // many times; it is the application, not the user, moving it.
+  if is_programmatic_move && state.is_remanage_suppressed(native_window) {
+    return Ok(());
+  }
+
   if !state.take_native_window_pending_remanage(native_window) {
     return Ok(());
+  }
+
+  if is_programmatic_move {
+    state.record_programmatic_remanage(native_window);
   }
 
   manage_window(native_window.clone(), None, state, config)
