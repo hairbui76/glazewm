@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.13.1](https://github.com/hairbui76/glazewm/compare/v3.13.0...v3.13.1) (2026-09-16)
+
+
+### Bug fixes
+
+* stop bouncing windows that keep putting themselves back ([2cb4c8a](https://github.com/hairbui76/glazewm/commit/2cb4c8a3cbe6796328a20aff0e1abb56cd009411))
+
 ## [3.13.0](https://github.com/hairbui76/glazewm/compare/v3.12.0...v3.13.0) (2026-09-16)
 
 
