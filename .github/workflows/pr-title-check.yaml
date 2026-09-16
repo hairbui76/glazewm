@@ -6,11 +6,13 @@ on:
 
 jobs:
   pr-title-check:
-    # Release PRs are titled by release-please (e.g. `chore(main): release
-    # 1.2.3`), which the conventional-commit scope check rejects.
-    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
     steps:
+      # Release PRs are titled by release-please (e.g. `chore(main):
+      # release 1.2.3`), which the conventional-commit scope check
+      # rejects. The condition sits on the step rather than the job, since
+      # a run whose only job is skipped is reported as a failed run.
       - uses: glzr-io/actions/semantic-prs@main
+        if: ${{ !startsWith(github.head_ref, 'release-please--') }}
         with:
           gh-token: ${{ secrets.GITHUB_TOKEN }}
