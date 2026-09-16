@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.11.1](https://github.com/hairbui76/glazewm/compare/v3.11.0...v3.11.1) (2026-09-16)
+
+
+### Bug fixes
+
+* **ci:** stop requesting UIAccess in release builds ([e2d2518](https://github.com/hairbui76/glazewm/commit/e2d25180f2355e9bbd19b2dee90f862a818e4b9a))
+
 ## [3.11.0](https://github.com/hairbui76/glazewm/compare/v3.10.1...v3.11.0) (2026-09-16)
 
 
