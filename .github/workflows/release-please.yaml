@@ -56,10 +56,12 @@ jobs:
           mv installer-arm64.msi "standalone-glazewm-$VERSION-arm64.msi"
           mv installer-x64.msi "standalone-glazewm-$VERSION-x64.msi"
 
-      # The release is created as a draft by release-please, so that it's
-      # only visible (and only picked up by the in-app updater) once its
-      # installers have been attached.
-      - name: Attach installers and publish release
+      # Releases are published immediately rather than as drafts, since
+      # GitHub only creates the git tag once a release is published, and
+      # release-please needs that tag to know where the last release was.
+      # The in-app updater tolerates the short window before the
+      # installers are attached.
+      - name: Attach installers to release
         env:
           VERSION: ${{ needs.release-please.outputs.tag_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -70,4 +72,4 @@ jobs:
             "./standalone-glazewm-$VERSION-arm64.msi#$VERSION for Windows (standalone, arm64)" \
             "./standalone-glazewm-$VERSION-x64.msi#$VERSION for Windows (standalone, x64)"
 
-          gh release edit "$VERSION" --draft=false --latest
+          gh release edit "$VERSION" --latest

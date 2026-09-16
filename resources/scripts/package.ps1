@@ -31,7 +31,11 @@ function SignFiles() {
   )
 
   foreach ($secret in $secrets) {
-    if (!(Test-Path "env:$secret")) {
+    # A missing GitHub Actions secret is passed through as an empty string
+    # rather than an undefined variable, so check the value itself.
+    $value = [Environment]::GetEnvironmentVariable($secret)
+
+    if ([string]::IsNullOrWhiteSpace($value)) {
       Write-Output "Skipping signing due to missing secret '$secret'."
       Return
     }
