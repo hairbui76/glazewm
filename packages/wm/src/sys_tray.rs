@@ -14,6 +14,9 @@ use tray_icon::{
 };
 use wm_platform::{Dispatcher, DispatcherExtWindows, ThreadBound};
 
+/// Version that the application was built with.
+const VERSION: &str = env!("VERSION_NUMBER");
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TrayMenuId {
   ReloadConfig,
@@ -126,6 +129,10 @@ impl SystemTray {
     animations_enabled: bool,
     run_on_startup_enabled: bool,
   ) -> anyhow::Result<TrayIcon> {
+    // Disabled so that it reads as a heading rather than an action.
+    let version_item =
+      MenuItem::new(format!("GlazeWM v{VERSION}"), false, None);
+
     let reload_config_item = MenuItem::with_id(
       TrayMenuId::ReloadConfig,
       "Reload config",
@@ -168,6 +175,8 @@ impl SystemTray {
 
     let tray_menu = Menu::new();
     tray_menu.append_items(&[
+      &version_item,
+      &PredefinedMenuItem::separator(),
       &reload_config_item,
       &config_dir_item,
       &toggle_animations_item,
@@ -183,7 +192,7 @@ impl SystemTray {
 
     let tray_icon = TrayIconBuilder::new()
       .with_menu(Box::new(tray_menu))
-      .with_tooltip(format!("GlazeWM v{}", env!("VERSION_NUMBER")))
+      .with_tooltip(format!("GlazeWM v{VERSION}"))
       .with_icon(icon)
       .build()?;
 
