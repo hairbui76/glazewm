@@ -31,6 +31,9 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(10);
 /// exit before giving up.
 const EXIT_WAIT_SECS: u32 = 60;
 
+/// Registry key under which the installer records its install directory.
+const INSTALL_DIR_KEY: &str = r"HKLM:\SOFTWARE\glzr.io\GlazeWM";
+
 /// Whether an update check is currently running.
 ///
 /// Update checks are triggered from the system tray, which allows the menu
@@ -120,8 +123,10 @@ fn run_update_flow(
     "Update available",
     &format!(
       "GlazeWM v{} is available. You're currently on v{current_version}.\n\n\
-       Download and install it now? GlazeWM exits while the installer \
-       runs and is relaunched once it completes.",
+       Install it now? The installer is downloaded in the background, \
+       which takes a moment with no window of its own. GlazeWM then exits, \
+       the installer asks for administrator rights, and the new version is \
+       started once it finishes.",
       release.version
     ),
   );
@@ -275,30 +280,49 @@ fn run_installer_after_exit(installer_path: &Path) -> anyhow::Result<()> {
   Ok(())
 }
 
-/// Builds the PowerShell script that waits for the WM process to exit,
+/// Builds the `PowerShell` script that waits for the WM process to exit,
 /// runs the installer, and relaunches the WM.
 ///
 /// The installer is run in passive mode so that the user sees its progress
-/// without having to click through it. `GlazeWM` is only relaunched if the
-/// installer succeeded, where exit code `3010` means that it succeeded but
-/// wants a reboot.
+/// without having to click through it. Exit code `3010` means the install
+/// succeeded but wants a reboot, so it counts as success.
+///
+/// The newly installed executable is relaunched rather than the one that
+/// was running. The two differ whenever the WM was started from outside
+/// the install directory, such as from a local build, in which case
+/// relaunching the running executable would leave the user on the old
+/// version with no sign that anything happened. `exe_path` is only used as
+/// a fallback for when the install directory cannot be read back.
 fn deferred_install_script(
   pid: u32,
   installer_path: &Path,
   exe_path: &Path,
 ) -> String {
   let installer = escape_ps_literal(&installer_path.to_string_lossy());
-  let exe = escape_ps_literal(&exe_path.to_string_lossy());
+  let fallback_exe = escape_ps_literal(&exe_path.to_string_lossy());
 
-  format!(
-    "$deadline = (Get-Date).AddSeconds({EXIT_WAIT_SECS}); \
-     while ((Get-Process -Id {pid} -ErrorAction SilentlyContinue) -and \
-     ((Get-Date) -lt $deadline)) {{ Start-Sleep -Milliseconds 200 }}; \
-     if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 1 }}; \
-     $proc = Start-Process -FilePath '{installer}' \
-     -ArgumentList '/passive','/norestart' -PassThru -Wait; \
-     if (($proc.ExitCode -eq 0) -or ($proc.ExitCode -eq 3010))      {{ Start-Process -FilePath '{exe}' }}"
-  )
+  // Built as separate statements rather than one long literal so that each
+  // step of the script stays readable.
+  [
+    format!("$deadline = (Get-Date).AddSeconds({EXIT_WAIT_SECS});"),
+    format!(
+      "while ((Get-Process -Id {pid} -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {{ Start-Sleep -Milliseconds 200 }};"
+    ),
+    format!(
+      "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 1 }};"
+    ),
+    format!(
+      "$proc = Start-Process -FilePath '{installer}' -ArgumentList '/passive','/norestart' -PassThru -Wait;"
+    ),
+    "if (($proc.ExitCode -ne 0) -and ($proc.ExitCode -ne 3010)) { exit $proc.ExitCode };".to_string(),
+    format!("$exe = '{fallback_exe}';"),
+    format!(
+      "$dir = (Get-ItemProperty '{INSTALL_DIR_KEY}' -ErrorAction SilentlyContinue).InstallDir;"
+    ),
+    "if ($dir) { $installed = Join-Path $dir 'glazewm.exe'; if (Test-Path $installed) { $exe = $installed } };".to_string(),
+    "Start-Process -FilePath $exe".to_string(),
+  ]
+  .join(" ")
 }
 
 /// Escapes a value for use within a single-quoted PowerShell string.
@@ -415,7 +439,30 @@ mod tests {
     );
     assert!(
       script.contains(r"'C:\Program Files\glzr.io\glazewm.exe'"),
-      "executable path should be single-quoted"
+      "fallback executable path should be single-quoted"
+    );
+  }
+
+  #[test]
+  fn deferred_script_relaunches_the_installed_executable() {
+    let script = deferred_install_script(
+      1234,
+      Path::new(r"C:\temp\glazewm-v3.11.0.exe"),
+      Path::new(r"D:\dev\glazewm\target\release\glazewm.exe"),
+    );
+
+    assert!(
+      script
+        .contains(r"(Get-ItemProperty 'HKLM:\SOFTWARE\glzr.io\GlazeWM'"),
+      "install directory should be read back from the registry"
+    );
+    assert!(
+      script.contains("Join-Path $dir 'glazewm.exe'"),
+      "the installed executable should be preferred over the running one"
+    );
+    assert!(
+      script.trim_end().ends_with("Start-Process -FilePath $exe"),
+      "the resolved executable should be the one relaunched"
     );
   }
 }
