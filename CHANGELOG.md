@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.14.0](https://github.com/hairbui76/glazewm/compare/v3.13.1...v3.14.0) (2026-09-24)
+
+
+### Features
+
+* add a command to renumber workspaces without gaps ([14af98b](https://github.com/hairbui76/glazewm/commit/14af98b4be3061336bd160ac4a89661c8e121ba8))
+
 ## [3.13.1](https://github.com/hairbui76/glazewm/compare/v3.13.0...v3.13.1) (2026-09-16)
 
 
