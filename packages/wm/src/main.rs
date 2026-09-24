@@ -18,7 +18,7 @@ use tracing_subscriber::{
   fmt::{self, writer::MakeWriterExt},
   layer::SubscriberExt,
 };
-use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
+use wm_common::{AppCommand, Verbosity, WmEvent};
 use wm_platform::{
   Dispatcher, DisplayListener, EventLoop, KeybindingListener,
   MouseEventKind, MouseListener, PlatformEvent, SingleInstance,
@@ -253,12 +253,9 @@ async fn start_wm(
 
         Ok(())
       },
-      Some(()) = tray.config_reload_rx.recv() => {
-        wm.process_commands(
-          &vec![InvokeCommand::WmReloadConfig],
-          None,
-          &mut config,
-        ).map(|_| ())
+      Some(command) = tray.command_rx.recv() => {
+        tracing::info!("Received tray command: {:?}", command);
+        wm.process_commands(&vec![command], None, &mut config).map(|_| ())
       },
     };
 

@@ -12,6 +12,7 @@ use tray_icon::{
   menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
   Icon, TrayIcon, TrayIconBuilder,
 };
+use wm_common::InvokeCommand;
 use wm_platform::{Dispatcher, DispatcherExtWindows, ThreadBound};
 
 /// Version that the application was built with.
@@ -19,6 +20,7 @@ const VERSION: &str = env!("VERSION_NUMBER");
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TrayMenuId {
+  RearrangeWorkspaces,
   ReloadConfig,
   ShowConfigFolder,
   ToggleWindowAnimations,
@@ -30,6 +32,9 @@ enum TrayMenuId {
 impl Display for TrayMenuId {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
+      TrayMenuId::RearrangeWorkspaces => {
+        write!(f, "rearrange_workspaces")
+      }
       TrayMenuId::ReloadConfig => write!(f, "reload_config"),
       TrayMenuId::ShowConfigFolder => write!(f, "show_config_folder"),
       TrayMenuId::ToggleWindowAnimations => {
@@ -48,6 +53,7 @@ impl FromStr for TrayMenuId {
   fn from_str(event: &str) -> Result<Self, Self::Err> {
     match event {
       "show_config_folder" => Ok(Self::ShowConfigFolder),
+      "rearrange_workspaces" => Ok(Self::RearrangeWorkspaces),
       "reload_config" => Ok(Self::ReloadConfig),
       "toggle_window_animations" => Ok(Self::ToggleWindowAnimations),
       "run_on_startup" => Ok(Self::RunOnStartup),
@@ -59,7 +65,7 @@ impl FromStr for TrayMenuId {
 }
 
 pub struct SystemTray {
-  pub config_reload_rx: mpsc::UnboundedReceiver<()>,
+  pub command_rx: mpsc::UnboundedReceiver<InvokeCommand>,
   pub exit_rx: mpsc::UnboundedReceiver<()>,
   _icon_thread: Option<std::thread::JoinHandle<()>>,
   _tray_icon: ThreadBound<TrayIcon>,
@@ -72,7 +78,7 @@ impl SystemTray {
     dispatcher: Dispatcher,
   ) -> anyhow::Result<Self> {
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
-    let (config_reload_tx, config_reload_rx) = mpsc::unbounded_channel();
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
 
     let animations_enabled = Arc::new(Mutex::new(
       dispatcher.window_animations_enabled().unwrap_or(false),
@@ -106,7 +112,7 @@ impl SystemTray {
             &menu_event,
             &dispatcher,
             &config_path,
-            &config_reload_tx,
+            &command_tx,
             &exit_tx,
             &animations_enabled,
             &run_on_startup_enabled,
@@ -118,7 +124,7 @@ impl SystemTray {
     });
 
     Ok(Self {
-      config_reload_rx,
+      command_rx,
       exit_rx,
       _icon_thread: Some(icon_thread),
       _tray_icon: tray_icon,
@@ -132,6 +138,13 @@ impl SystemTray {
     // Disabled so that it reads as a heading rather than an action.
     let version_item =
       MenuItem::new(format!("GlazeWM v{VERSION}"), false, None);
+
+    let rearrange_workspaces_item = MenuItem::with_id(
+      TrayMenuId::RearrangeWorkspaces,
+      "Rearrange workspaces",
+      true,
+      None,
+    );
 
     let reload_config_item = MenuItem::with_id(
       TrayMenuId::ReloadConfig,
@@ -177,6 +190,7 @@ impl SystemTray {
     tray_menu.append_items(&[
       &version_item,
       &PredefinedMenuItem::separator(),
+      &rearrange_workspaces_item,
       &reload_config_item,
       &config_dir_item,
       &toggle_animations_item,
@@ -221,7 +235,7 @@ impl SystemTray {
     menu_id: &TrayMenuId,
     dispatcher: &Dispatcher,
     config_path: &Path,
-    config_reload_tx: &mpsc::UnboundedSender<()>,
+    command_tx: &mpsc::UnboundedSender<InvokeCommand>,
     exit_tx: &mpsc::UnboundedSender<()>,
     animations_enabled: &Arc<Mutex<bool>>,
     run_on_startup_enabled: &Arc<Mutex<bool>>,
@@ -237,7 +251,11 @@ impl SystemTray {
         Ok(())
       }
       TrayMenuId::ReloadConfig => {
-        config_reload_tx.send(())?;
+        command_tx.send(InvokeCommand::WmReloadConfig)?;
+        Ok(())
+      }
+      TrayMenuId::RearrangeWorkspaces => {
+        command_tx.send(InvokeCommand::WmRearrangeWorkspaces)?;
         Ok(())
       }
       TrayMenuId::ToggleWindowAnimations => {

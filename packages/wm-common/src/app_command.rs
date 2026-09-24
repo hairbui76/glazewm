@@ -262,6 +262,7 @@ pub enum InvokeCommand {
     name: String,
   },
   WmExit,
+  WmRearrangeWorkspaces,
   WmRedraw,
   WmReloadConfig,
   WmTogglePause,

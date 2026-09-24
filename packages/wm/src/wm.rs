@@ -29,7 +29,7 @@ use crate::{
       WindowPositionTarget,
     },
     workspace::{
-      focus_workspace, move_workspace_in_direction,
+      focus_workspace, move_workspace_in_direction, rearrange_workspaces,
       update_workspace_config,
     },
   },
@@ -759,6 +759,9 @@ impl WindowManager {
         enable_binding_mode(name, state, config)
       }
       InvokeCommand::WmExit => state.emit_exit(),
+      InvokeCommand::WmRearrangeWorkspaces => {
+        rearrange_workspaces(state, config)
+      }
       InvokeCommand::WmRedraw => {
         state
           .pending_sync
