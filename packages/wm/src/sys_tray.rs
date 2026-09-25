@@ -12,11 +12,94 @@ use tray_icon::{
   menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
   Icon, TrayIcon, TrayIconBuilder,
 };
-use wm_common::InvokeCommand;
-use wm_platform::{Dispatcher, DispatcherExtWindows, ThreadBound};
+use wm_common::{InvokeCommand, KeybindingConfig};
+use wm_platform::{
+  Dispatcher, DispatcherExtWindows, Keybinding, ThreadBound,
+};
+
+use crate::user_config::UserConfig;
 
 /// Version that the application was built with.
 const VERSION: &str = env!("VERSION_NUMBER");
+
+/// Keyboard shortcuts shown alongside the tray menu's actions.
+///
+/// Only the actions that map to a WM command can have one, since the
+/// remaining entries (showing the config folder, toggling animations, and
+/// so on) exist solely in the menu.
+#[derive(Clone, Debug, Default)]
+struct TrayShortcuts {
+  rearrange_workspaces: Option<String>,
+  reload_config: Option<String>,
+  exit: Option<String>,
+}
+
+impl TrayShortcuts {
+  /// Resolves each action's shortcut from the user's keybindings.
+  fn from_config(config: &UserConfig) -> Self {
+    Self {
+      rearrange_workspaces: shortcut_for(
+        &config.value.keybindings,
+        &InvokeCommand::WmRearrangeWorkspaces,
+      ),
+      reload_config: shortcut_for(
+        &config.value.keybindings,
+        &InvokeCommand::WmReloadConfig,
+      ),
+      exit: shortcut_for(
+        &config.value.keybindings,
+        &InvokeCommand::WmExit,
+      ),
+    }
+  }
+}
+
+/// The first keybinding bound to the given command, formatted for display.
+///
+/// Only top-level keybindings are considered, since the ones belonging to
+/// a binding mode are unavailable unless that mode is active.
+fn shortcut_for(
+  keybindings: &[KeybindingConfig],
+  command: &InvokeCommand,
+) -> Option<String> {
+  keybindings
+    .iter()
+    .find(|keybinding_config| keybinding_config.commands.contains(command))
+    .and_then(|keybinding_config| keybinding_config.bindings.first())
+    .map(format_shortcut)
+}
+
+/// Formats a keybinding the way menus conventionally show shortcuts, for
+/// example `Alt+Shift+O`.
+fn format_shortcut(keybinding: &Keybinding) -> String {
+  keybinding
+    .keys()
+    .iter()
+    .map(|key| {
+      let name = key.to_string();
+      let mut characters = name.chars();
+
+      match characters.next() {
+        Some(first) => {
+          first.to_uppercase().chain(characters).collect::<String>()
+        }
+        None => name,
+      }
+    })
+    .collect::<Vec<_>>()
+    .join("+")
+}
+
+/// Appends a shortcut to a menu item's label.
+///
+/// A tab separates the two, which is what the platform's menus use to
+/// right-align the shortcut.
+fn with_shortcut(label: &str, shortcut: Option<&str>) -> String {
+  match shortcut {
+    Some(shortcut) => format!("{label}\t{shortcut}"),
+    None => label.to_string(),
+  }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TrayMenuId {
@@ -67,14 +150,16 @@ impl FromStr for TrayMenuId {
 pub struct SystemTray {
   pub command_rx: mpsc::UnboundedReceiver<InvokeCommand>,
   pub exit_rx: mpsc::UnboundedReceiver<()>,
+  animations_enabled: Arc<Mutex<bool>>,
+  run_on_startup_enabled: Arc<Mutex<bool>>,
   _icon_thread: Option<std::thread::JoinHandle<()>>,
-  _tray_icon: ThreadBound<TrayIcon>,
+  tray_icon: ThreadBound<TrayIcon>,
 }
 
 impl SystemTray {
   /// Install the system tray on the main thread after the run loop starts.
   pub fn new(
-    config_path: &Path,
+    config: &UserConfig,
     dispatcher: Dispatcher,
   ) -> anyhow::Result<Self> {
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
@@ -92,17 +177,23 @@ impl SystemTray {
         .unwrap_or(false),
     ));
 
+    let shortcuts = TrayShortcuts::from_config(config);
+
     let tray_icon = dispatcher.dispatch_sync(|| {
       let tray_icon = Self::create_tray_icon(
         *animations_enabled.lock().unwrap(),
         *run_on_startup_enabled.lock().unwrap(),
+        &shortcuts,
       )
       .unwrap();
       ThreadBound::new(tray_icon, dispatcher.clone())
     })?;
 
     // Spawn thread to handle tray menu events.
-    let config_path = config_path.to_owned();
+    let config_path = config.path.clone();
+    let thread_animations_enabled = animations_enabled.clone();
+    let thread_run_on_startup_enabled = run_on_startup_enabled.clone();
+
     let icon_thread = std::thread::spawn(move || {
       let menu_event_rx = MenuEvent::receiver();
 
@@ -114,8 +205,8 @@ impl SystemTray {
             &config_path,
             &command_tx,
             &exit_tx,
-            &animations_enabled,
-            &run_on_startup_enabled,
+            &thread_animations_enabled,
+            &thread_run_on_startup_enabled,
           ) {
             tracing::warn!("Failed to handle tray menu event: {}", err);
           }
@@ -126,29 +217,65 @@ impl SystemTray {
     Ok(Self {
       command_rx,
       exit_rx,
+      animations_enabled,
+      run_on_startup_enabled,
       _icon_thread: Some(icon_thread),
-      _tray_icon: tray_icon,
+      tray_icon,
     })
   }
 
-  fn create_tray_icon(
+  /// Rebuilds the tray menu so that the shortcuts it shows match the
+  /// user's current keybindings.
+  ///
+  /// Called after the config is reloaded, since the menu is otherwise
+  /// only built once at startup.
+  pub fn update_menu(&self, config: &UserConfig) -> anyhow::Result<()> {
+    let shortcuts = TrayShortcuts::from_config(config);
+    let animations_enabled = *self.animations_enabled.lock().unwrap();
+    let run_on_startup_enabled =
+      *self.run_on_startup_enabled.lock().unwrap();
+
+    // The menu has to be built on the thread that owns the tray icon.
+    self.tray_icon.with(move |tray_icon| {
+      let menu = Self::create_menu(
+        animations_enabled,
+        run_on_startup_enabled,
+        &shortcuts,
+      )?;
+
+      tray_icon.set_menu(Some(Box::new(menu)));
+      anyhow::Ok(())
+    })??;
+
+    Ok(())
+  }
+
+  /// Builds the tray's context menu.
+  ///
+  /// Actions that the user has a keybinding for show it alongside their
+  /// label, the way menu shortcuts are conventionally displayed.
+  fn create_menu(
     animations_enabled: bool,
     run_on_startup_enabled: bool,
-  ) -> anyhow::Result<TrayIcon> {
+    shortcuts: &TrayShortcuts,
+  ) -> anyhow::Result<Menu> {
     // Disabled so that it reads as a heading rather than an action.
     let version_item =
       MenuItem::new(format!("GlazeWM v{VERSION}"), false, None);
 
     let rearrange_workspaces_item = MenuItem::with_id(
       TrayMenuId::RearrangeWorkspaces,
-      "Rearrange workspaces",
+      with_shortcut(
+        "Rearrange workspaces",
+        shortcuts.rearrange_workspaces.as_deref(),
+      ),
       true,
       None,
     );
 
     let reload_config_item = MenuItem::with_id(
       TrayMenuId::ReloadConfig,
-      "Reload config",
+      with_shortcut("Reload config", shortcuts.reload_config.as_deref()),
       true,
       None,
     );
@@ -183,8 +310,12 @@ impl SystemTray {
       None,
     );
 
-    let exit_item =
-      MenuItem::with_id(TrayMenuId::Exit, "Exit", true, None);
+    let exit_item = MenuItem::with_id(
+      TrayMenuId::Exit,
+      with_shortcut("Exit", shortcuts.exit.as_deref()),
+      true,
+      None,
+    );
 
     let tray_menu = Menu::new();
     tray_menu.append_items(&[
@@ -199,6 +330,20 @@ impl SystemTray {
       &check_for_update_item,
       &exit_item,
     ])?;
+
+    Ok(tray_menu)
+  }
+
+  fn create_tray_icon(
+    animations_enabled: bool,
+    run_on_startup_enabled: bool,
+    shortcuts: &TrayShortcuts,
+  ) -> anyhow::Result<TrayIcon> {
+    let tray_menu = Self::create_menu(
+      animations_enabled,
+      run_on_startup_enabled,
+      shortcuts,
+    )?;
 
     let icon = Self::load_icon(include_bytes!(
       "../../../resources/assets/icon.png"
@@ -298,4 +443,97 @@ fn auto_launch_instance() -> anyhow::Result<AutoLaunch> {
   let instance = AutoLaunch::new("GlazeWM", &exe_path, &args);
 
   Ok(instance)
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{InvokeCommand, KeybindingConfig};
+  use wm_platform::{Key, Keybinding};
+
+  use super::{format_shortcut, shortcut_for, with_shortcut};
+
+  fn binding(
+    keys: Vec<Key>,
+    commands: Vec<InvokeCommand>,
+  ) -> KeybindingConfig {
+    KeybindingConfig {
+      bindings: vec![Keybinding::new(keys).unwrap()],
+      commands,
+    }
+  }
+
+  #[test]
+  fn finds_the_shortcut_bound_to_a_command() {
+    let keybindings = vec![
+      binding(
+        vec![Key::Alt, Key::Shift, Key::R],
+        vec![InvokeCommand::WmReloadConfig],
+      ),
+      binding(
+        vec![Key::Alt, Key::Shift, Key::O],
+        vec![InvokeCommand::WmRearrangeWorkspaces],
+      ),
+    ];
+
+    assert_eq!(
+      shortcut_for(&keybindings, &InvokeCommand::WmRearrangeWorkspaces),
+      Some("Alt+Shift+O".to_string())
+    );
+  }
+
+  #[test]
+  fn has_no_shortcut_for_an_unbound_command() {
+    let keybindings = vec![binding(
+      vec![Key::Alt, Key::Shift, Key::R],
+      vec![InvokeCommand::WmReloadConfig],
+    )];
+
+    assert_eq!(shortcut_for(&keybindings, &InvokeCommand::WmExit), None);
+  }
+
+  #[test]
+  fn finds_a_command_bound_alongside_others() {
+    let keybindings = vec![binding(
+      vec![Key::Alt, Key::Shift, Key::O],
+      vec![
+        InvokeCommand::ToggleTiling,
+        InvokeCommand::WmRearrangeWorkspaces,
+      ],
+    )];
+
+    assert_eq!(
+      shortcut_for(&keybindings, &InvokeCommand::WmRearrangeWorkspaces),
+      Some("Alt+Shift+O".to_string())
+    );
+  }
+
+  #[test]
+  fn formats_a_keybinding_for_a_menu() {
+    let keybinding =
+      Keybinding::new(vec![Key::Alt, Key::Shift, Key::O]).unwrap();
+
+    assert_eq!(format_shortcut(&keybinding), "Alt+Shift+O");
+  }
+
+  #[test]
+  fn formats_single_key_and_named_keys() {
+    let single = Keybinding::new(vec![Key::F1]).unwrap();
+    assert_eq!(format_shortcut(&single), "F1");
+
+    let named = Keybinding::new(vec![Key::Alt, Key::Left]).unwrap();
+    assert_eq!(format_shortcut(&named), "Alt+Left");
+  }
+
+  #[test]
+  fn separates_the_shortcut_from_the_label_with_a_tab() {
+    assert_eq!(
+      with_shortcut("Reload config", Some("Alt+Shift+R")),
+      "Reload config\tAlt+Shift+R"
+    );
+  }
+
+  #[test]
+  fn leaves_the_label_alone_without_a_shortcut() {
+    assert_eq!(with_shortcut("Exit", None), "Exit");
+  }
 }

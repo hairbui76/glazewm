@@ -110,7 +110,7 @@ async fn start_wm(
   let mut config = UserConfig::new(config_path)?;
 
   // Add application icon to system tray.
-  let mut tray = SystemTray::new(&config.path, dispatcher.clone())?;
+  let mut tray = SystemTray::new(&config, dispatcher.clone())?;
 
   let mut wm = WindowManager::new(&mut config, dispatcher.clone())?;
 
@@ -159,6 +159,8 @@ async fn start_wm(
   let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
   cleanup_interval
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+  let mut should_update_tray_menu = false;
 
   loop {
     let res = tokio::select! {
@@ -224,6 +226,13 @@ async fn start_wm(
           let _ = mouse_listener.enable(!is_paused);
         }
 
+        // The tray menu shows the user's shortcuts, so it has to be
+        // rebuilt when they change. Deferred until after `select!`, which
+        // holds a borrow of the tray's channels.
+        if matches!(wm_event, WmEvent::UserConfigChanged { .. }) {
+          should_update_tray_menu = true;
+        }
+
         // Update keybinding and mouse listeners on config changes.
         if matches!(
           wm_event,
@@ -258,6 +267,14 @@ async fn start_wm(
         wm.process_commands(&vec![command], None, &mut config).map(|_| ())
       },
     };
+
+    if should_update_tray_menu {
+      should_update_tray_menu = false;
+
+      if let Err(err) = tray.update_menu(&config) {
+        tracing::warn!("Failed to update tray menu: {:?}", err);
+      }
+    }
 
     if let Err(err) = res {
       tracing::error!("{:?}", err);
