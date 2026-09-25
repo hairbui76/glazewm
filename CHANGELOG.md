@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.15.0](https://github.com/hairbui76/glazewm/compare/v3.14.0...v3.15.0) (2026-09-25)
+
+
+### Features
+
+* show keyboard shortcuts in the tray menu ([8a15803](https://github.com/hairbui76/glazewm/commit/8a1580352e5bedf3c76e54f892c3fac907718a3a))
+
 ## [3.14.0](https://github.com/hairbui76/glazewm/compare/v3.13.1...v3.14.0) (2026-09-24)
 
 
