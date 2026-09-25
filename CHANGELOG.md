@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.15.1](https://github.com/hairbui76/glazewm/compare/v3.15.0...v3.15.1) (2026-09-25)
+
+
+### Bug fixes
+
+* drop empty workspaces when rearranging ([86ee8c1](https://github.com/hairbui76/glazewm/commit/86ee8c1e5d65eb17488c98f88f0c4e2d2123c0ea))
+
 ## [3.15.0](https://github.com/hairbui76/glazewm/compare/v3.14.0...v3.15.0) (2026-09-25)
 
 
