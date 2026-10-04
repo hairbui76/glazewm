@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::Context;
-use auto_launch::AutoLaunch;
 use tokio::sync::mpsc;
 use tray_icon::{
   menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
@@ -14,7 +13,7 @@ use tray_icon::{
 };
 use wm_common::{InvokeCommand, KeybindingConfig};
 use wm_platform::{
-  Dispatcher, DispatcherExtWindows, Keybinding, ThreadBound,
+  Autostart, Dispatcher, DispatcherExtWindows, Keybinding, ThreadBound,
 };
 
 use crate::user_config::UserConfig;
@@ -169,13 +168,8 @@ impl SystemTray {
       dispatcher.window_animations_enabled().unwrap_or(false),
     ));
 
-    let run_on_startup_enabled = Arc::new(Mutex::new(
-      auto_launch_instance()
-        .and_then(|auto_launch| {
-          auto_launch.is_enabled().map_err(Into::into)
-        })
-        .unwrap_or(false),
-    ));
+    let run_on_startup_enabled =
+      Arc::new(Mutex::new(is_run_on_startup_enabled()));
 
     let shortcuts = TrayShortcuts::from_config(config);
 
@@ -414,9 +408,9 @@ impl SystemTray {
           run_on_startup_enabled.lock().unwrap();
 
         if *run_on_startup_enabled {
-          auto_launch_instance()?.disable()?;
+          autostart_instance()?.disable()?;
         } else {
-          auto_launch_instance()?.enable()?;
+          autostart_instance()?.enable()?;
         }
 
         *run_on_startup_enabled = !*run_on_startup_enabled;
@@ -434,15 +428,41 @@ impl SystemTray {
   }
 }
 
-/// Creates a new [`AutoLaunch`] instance for managing auto-launch at
-/// system startup.
-fn auto_launch_instance() -> anyhow::Result<AutoLaunch> {
-  let exe_path = std::env::current_exe()?.to_string_lossy().to_string();
-  let args: [&str; 0] = [];
+/// Creates an [`Autostart`] for starting the WM when the user signs in.
+fn autostart_instance() -> anyhow::Result<Autostart> {
+  let exe_path = std::env::current_exe()?;
+  Ok(Autostart::new("GlazeWM", &exe_path)?)
+}
 
-  let instance = AutoLaunch::new("GlazeWM", &exe_path, &args);
+/// Whether the WM is registered to start when the user signs in.
+///
+/// Earlier versions registered under the `Run` registry key, which is
+/// carried over first so that the setting survives the change of
+/// mechanism. Failures are logged and reported as not enabled, since the
+/// tray should come up regardless.
+fn is_run_on_startup_enabled() -> bool {
+  let autostart = match autostart_instance() {
+    Ok(autostart) => autostart,
+    Err(err) => {
+      tracing::warn!("Failed to resolve autostart registration: {}", err);
+      return false;
+    }
+  };
 
-  Ok(instance)
+  match autostart.migrate_from_run_key() {
+    Ok(true) => {
+      tracing::info!("Moved autostart registration to a scheduled task.");
+    }
+    Ok(false) => {}
+    Err(err) => {
+      tracing::warn!("Failed to migrate autostart registration: {}", err);
+    }
+  }
+
+  autostart.is_enabled().unwrap_or_else(|err| {
+    tracing::warn!("Failed to query autostart registration: {}", err);
+    false
+  })
 }
 
 #[cfg(test)]
