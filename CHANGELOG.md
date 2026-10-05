@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.15.2](https://github.com/hairbui76/glazewm/compare/v3.15.1...v3.15.2) (2026-10-05)
+
+
+### Bug fixes
+
+* **installer:** keep autostart enabled across updates ([14e4fab](https://github.com/hairbui76/glazewm/commit/14e4fabaa88f882abb0c61b97abb56edfd9160c5))
+* resolve the latest release without the GitHub API ([62f0294](https://github.com/hairbui76/glazewm/commit/62f0294f9676d61739bf32d6f65720b48541331e))
+* start at sign-in through a scheduled task ([c1f777a](https://github.com/hairbui76/glazewm/commit/c1f777a78aea60a8207e2fdb3a95602f42c97b64))
+
 ## [3.15.1](https://github.com/hairbui76/glazewm/compare/v3.15.0...v3.15.1) (2026-09-25)
 
 
