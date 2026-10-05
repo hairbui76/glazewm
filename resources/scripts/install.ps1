@@ -40,22 +40,25 @@ function Install-GlazeWM {
   $installerPath = $null
 
   try {
-    $release = Get-GlazeWMRelease -Repo $Repo -Version $Version
-    $asset = $release.assets |
-      Where-Object { $_.name -like 'glazewm-v*.exe' } |
-      Select-Object -First 1
+    $tag = Resolve-GlazeWMTag -Repo $Repo -Version $Version
 
-    if (!$asset) {
-      throw "Release $($release.tag_name) has no Windows installer attached."
-    }
+    # Named by the release pipeline after the tag of the release.
+    $installerName = "glazewm-$tag.exe"
+    $installerUrl = "https://github.com/$Repo/releases/download/$tag/$installerName"
 
-    Write-Host "Installing GlazeWM $($release.tag_name)." -ForegroundColor Cyan
+    Write-Host "Installing GlazeWM $tag." -ForegroundColor Cyan
 
     New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
-    $installerPath = Join-Path $downloadDir $asset.name
+    $installerPath = Join-Path $downloadDir $installerName
 
-    Write-Host "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)."
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installerPath
+    Write-Host "Downloading $installerName."
+
+    try {
+      Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+    }
+    catch {
+      throw "Unable to download '$installerUrl'. Either release $tag doesn't exist, or its installer isn't attached yet. $($_.Exception.Message)"
+    }
 
     # The installer is per-machine, so it self-elevates through UAC.
     $installerArgs = if ($Silent) { @('/quiet', '/norestart') } else { @('/passive', '/norestart') }
@@ -65,10 +68,10 @@ function Install-GlazeWM {
 
     switch ($process.ExitCode) {
       0 {
-        Write-Host "GlazeWM $($release.tag_name) installed." -ForegroundColor Green
+        Write-Host "GlazeWM $tag installed." -ForegroundColor Green
       }
       3010 {
-        Write-Host "GlazeWM $($release.tag_name) installed. Restart to complete setup." -ForegroundColor Green
+        Write-Host "GlazeWM $tag installed. Restart to complete setup." -ForegroundColor Green
       }
       default {
         throw "Installer exited with code $($process.ExitCode)."
@@ -87,7 +90,7 @@ function Install-GlazeWM {
   }
 }
 
-function Get-GlazeWMRelease {
+function Resolve-GlazeWMTag {
   [CmdletBinding()]
   param(
     # Repository to resolve the release from, in `owner/repo` format.
@@ -98,24 +101,37 @@ function Get-GlazeWMRelease {
     [string]$Version
   )
 
-  $url = if ($Version) {
-    "https://api.github.com/repos/$Repo/releases/tags/v$($Version.TrimStart('v'))"
-  } else {
-    "https://api.github.com/repos/$Repo/releases/latest"
+  if ($Version) {
+    return "v$($Version.TrimStart('v'))"
   }
 
-  $headers = @{
-    'Accept' = 'application/vnd.github+json'
-    'User-Agent' = 'glazewm-install'
-    'X-GitHub-Api-Version' = '2022-11-28'
-  }
+  # The `releases/latest` page redirects to the latest release, whose URL
+  # ends in its tag. The REST API is avoided on purpose: it limits
+  # unauthenticated requests to 60 an hour per IP address, and addresses
+  # are routinely shared between many people, so that limit is often spent
+  # before the first request is made.
+  $url = "https://github.com/$Repo/releases/latest"
 
   try {
-    Invoke-RestMethod -Uri $url -Headers $headers
+    $response = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing
   }
   catch {
-    throw "Unable to resolve a GlazeWM release from '$Repo'. $($_.Exception.Message)"
+    throw "Unable to resolve the latest GlazeWM release from '$Repo'. $($_.Exception.Message)"
   }
+
+  # Windows PowerShell exposes the URL that redirects led to as
+  # `ResponseUri`, whereas PowerShell 7 exposes it on the request message.
+  $finalUri = if ($response.BaseResponse.ResponseUri) {
+    $response.BaseResponse.ResponseUri
+  } else {
+    $response.BaseResponse.RequestMessage.RequestUri
+  }
+
+  if ("$finalUri" -notmatch '/releases/tag/([^/?#]+)') {
+    throw "'$Repo' has no published release."
+  }
+
+  $Matches[1]
 }
 
 Install-GlazeWM

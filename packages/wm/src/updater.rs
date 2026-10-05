@@ -8,8 +8,8 @@ use std::{
 
 use anyhow::Context;
 use semver::Version;
-use serde::Deserialize;
 use tokio::sync::mpsc;
+use ureq::ResponseExt;
 use wm_platform::Dispatcher;
 
 /// GitHub repository (in `owner/repo` format) that releases are pulled
@@ -21,7 +21,7 @@ const UPDATE_REPO: &str = match option_env!("UPDATE_REPO") {
   None => "hairbui76/glazewm",
 };
 
-/// Timeout for the GitHub API request that resolves the latest release.
+/// Timeout for the requests that resolve the latest release.
 const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Timeout for downloading the installer.
@@ -40,23 +40,10 @@ const INSTALL_DIR_KEY: &str = r"HKLM:\SOFTWARE\glzr.io\GlazeWM";
 /// item to be clicked repeatedly. Only one check is allowed at a time.
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-/// Release payload returned by the GitHub releases API.
-#[derive(Debug, Deserialize)]
-struct GithubRelease {
-  tag_name: String,
-  assets: Vec<GithubAsset>,
-}
-
-/// Release asset returned by the GitHub releases API.
-#[derive(Debug, Deserialize)]
-struct GithubAsset {
-  name: String,
-  browser_download_url: String,
-}
-
 /// Latest release available on GitHub.
 #[derive(Debug)]
 struct LatestRelease {
+  tag_name: String,
   version: Version,
   installer_name: String,
   installer_url: String,
@@ -119,6 +106,8 @@ fn run_update_flow(
     return Ok(());
   }
 
+  ensure_installer_available(&release)?;
+
   let should_update = dispatcher.show_confirm_dialog(
     "Update available",
     &format!(
@@ -154,44 +143,69 @@ fn current_version() -> anyhow::Result<Version> {
   })
 }
 
-/// Fetches the latest release from the GitHub releases API.
+/// Resolves the latest release from the redirect that GitHub serves for
+/// a repository's `releases/latest` page.
 ///
-/// Draft and pre-releases are excluded by the API. Returns an error if the
-/// release does not (yet) have a Windows installer attached, which can
-/// happen in the window between a release being published and its assets
-/// being uploaded.
+/// The REST API is deliberately avoided. Unauthenticated API requests are
+/// limited to 60 an hour per IP address, and addresses are routinely
+/// shared between many people (by an ISP or an office network), so the
+/// limit is often spent before the first request is made. The release
+/// pages are not subject to it.
+///
+/// Draft and pre-releases are never the target of that redirect.
 fn fetch_latest_release() -> anyhow::Result<LatestRelease> {
-  let url =
-    format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
+  let url = format!("https://github.com/{UPDATE_REPO}/releases/latest");
 
-  let body = http_agent(METADATA_TIMEOUT)
-    .get(&url)
-    .header("Accept", "application/vnd.github+json")
-    .header("X-GitHub-Api-Version", "2022-11-28")
+  let response = match http_agent(METADATA_TIMEOUT).head(&url).call() {
+    Ok(response) => response,
+    Err(ureq::Error::StatusCode(404)) => {
+      anyhow::bail!("'{UPDATE_REPO}' has no published release.")
+    }
+    Err(err) => {
+      return Err(err).with_context(|| format!("Failed to query '{url}'."))
+    }
+  };
+
+  let final_url = response.get_uri().to_string();
+
+  let tag_name = release_tag_from_url(&final_url).with_context(|| {
+    format!("Unable to tell the latest release from '{final_url}'.")
+  })?;
+
+  let installer_name = installer_name(&tag_name);
+
+  Ok(LatestRelease {
+    version: parse_release_version(&tag_name)?,
+    installer_url: format!(
+      "https://github.com/{UPDATE_REPO}/releases/download/{tag_name}/{installer_name}"
+    ),
+    installer_name,
+    tag_name,
+  })
+}
+
+/// Checks that the release's installer can be downloaded.
+///
+/// Returns an error if it isn't attached to the release (yet), which
+/// happens in the window between a release being published and the build
+/// that produces its installers finishing.
+fn ensure_installer_available(
+  release: &LatestRelease,
+) -> anyhow::Result<()> {
+  match http_agent(METADATA_TIMEOUT)
+    .head(&release.installer_url)
     .call()
-    .with_context(|| format!("Failed to query '{url}'."))?
-    .body_mut()
-    .read_to_string()
-    .context("Failed to read the GitHub API response.")?;
-
-  let release = serde_json::from_str::<GithubRelease>(&body)
-    .context("Failed to parse the GitHub API response.")?;
-
-  let version = parse_release_version(&release.tag_name)?;
-
-  let asset = installer_asset(&release.assets).with_context(|| {
-    format!(
+  {
+    Ok(_) => Ok(()),
+    Err(ureq::Error::StatusCode(404)) => anyhow::bail!(
       "Release {} has no Windows installer attached yet. Try again in a \
        few minutes.",
       release.tag_name
-    )
-  })?;
-
-  Ok(LatestRelease {
-    version,
-    installer_name: asset.name.clone(),
-    installer_url: asset.browser_download_url.clone(),
-  })
+    ),
+    Err(err) => Err(err).with_context(|| {
+      format!("Failed to query '{}'.", release.installer_url)
+    }),
+  }
 }
 
 /// Downloads the release's installer into a temporary directory.
@@ -346,17 +360,27 @@ fn parse_release_version(tag_name: &str) -> anyhow::Result<Version> {
     .with_context(|| format!("Invalid release tag '{tag_name}'."))
 }
 
-/// Finds the universal Windows installer within a release's assets.
+/// Extracts the release tag from the URL of a release page, such as
+/// `https://github.com/owner/repo/releases/tag/v1.2.3`.
 ///
-/// The installer is named `glazewm-v<version>.exe` by the release
-/// pipeline, which distinguishes it from the standalone MSI's.
-fn installer_asset(assets: &[GithubAsset]) -> Option<&GithubAsset> {
-  assets.iter().find(|asset| {
-    asset.name.starts_with("glazewm-v")
-      && Path::new(&asset.name)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
-  })
+/// Returns `None` for any other URL, which is where the `releases/latest`
+/// redirect ends up when a repository has no release to point at.
+fn release_tag_from_url(url: &str) -> Option<String> {
+  let (_, tag_name) = url.split_once("/releases/tag/")?;
+
+  // Drop anything trailing the tag, such as a query string.
+  let tag_name = tag_name
+    .split(['/', '?', '#'])
+    .next()
+    .filter(|tag_name| !tag_name.is_empty())?;
+
+  Some(tag_name.to_string())
+}
+
+/// Name of the universal Windows installer attached to the release with
+/// the given tag, as named by the release pipeline.
+fn installer_name(tag_name: &str) -> String {
+  format!("glazewm-{tag_name}.exe")
 }
 
 #[cfg(test)]
@@ -364,8 +388,8 @@ mod tests {
   use std::path::Path;
 
   use super::{
-    deferred_install_script, escape_ps_literal, installer_asset,
-    parse_release_version, GithubAsset, GithubRelease,
+    deferred_install_script, escape_ps_literal, installer_name,
+    parse_release_version, release_tag_from_url,
   };
 
   #[test]
@@ -382,40 +406,47 @@ mod tests {
   }
 
   #[test]
-  fn selects_universal_installer_from_assets() {
-    let release = serde_json::from_str::<GithubRelease>(
-      r#"{
-        "tag_name": "v3.11.0",
-        "assets": [
-          {
-            "name": "standalone-glazewm-v3.11.0-x64.msi",
-            "browser_download_url": "https://example.com/x64.msi"
-          },
-          {
-            "name": "glazewm-v3.11.0.exe",
-            "browser_download_url": "https://example.com/universal.exe"
-          }
-        ]
-      }"#,
-    )
-    .unwrap();
-
-    let asset = installer_asset(&release.assets).unwrap();
-    assert_eq!(asset.name, "glazewm-v3.11.0.exe");
+  fn reads_the_tag_from_a_release_page_url() {
     assert_eq!(
-      asset.browser_download_url,
-      "https://example.com/universal.exe"
+      release_tag_from_url(
+        "https://github.com/hairbui76/glazewm/releases/tag/v3.15.1"
+      ),
+      Some("v3.15.1".to_string())
     );
   }
 
   #[test]
-  fn ignores_releases_without_an_installer() {
-    let assets = vec![GithubAsset {
-      name: "standalone-glazewm-v3.11.0-arm64.msi".to_string(),
-      browser_download_url: "https://example.com/arm64.msi".to_string(),
-    }];
+  fn ignores_anything_trailing_the_tag() {
+    assert_eq!(
+      release_tag_from_url(
+        "https://github.com/owner/repo/releases/tag/v1.2.3?expanded=true"
+      ),
+      Some("v1.2.3".to_string())
+    );
+    assert_eq!(
+      release_tag_from_url(
+        "https://github.com/owner/repo/releases/tag/v1.2.3/"
+      ),
+      Some("v1.2.3".to_string())
+    );
+  }
 
-    assert!(installer_asset(&assets).is_none());
+  #[test]
+  fn has_no_tag_for_a_repository_without_releases() {
+    // Where `releases/latest` redirects to when there is nothing to show.
+    assert_eq!(
+      release_tag_from_url("https://github.com/owner/repo/releases"),
+      None
+    );
+    assert_eq!(
+      release_tag_from_url("https://github.com/owner/repo/releases/tag/"),
+      None
+    );
+  }
+
+  #[test]
+  fn names_the_installer_after_the_release_tag() {
+    assert_eq!(installer_name("v3.15.1"), "glazewm-v3.15.1.exe");
   }
 
   #[test]
