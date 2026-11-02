@@ -1,5 +1,5 @@
 use anyhow::Context;
-use tracing::warn;
+use tracing::{info, warn};
 use wm_common::{WindowState, WmEvent};
 use wm_platform::{NativeWindow, NativeWindowWindowsExt};
 
@@ -50,6 +50,8 @@ fn try_snap_native_window_to_external_monitor_workspace(
   }
 
   window.native().set_frame(&frame)?;
+
+  info!("Snapped window to {monitor} extent {frame:?}: {window}");
 
   window.update_native_properties(|properties| {
     properties.frame = frame;
@@ -111,6 +113,11 @@ fn try_snap_new_native_window_to_external_monitor_workspace(
 
   native_window.set_frame(&frame)?;
 
+  info!(
+    "Snapped new window {:?} to {monitor} extent {frame:?}.",
+    native_window.id()
+  );
+
   Ok(())
 }
 
@@ -119,6 +126,8 @@ pub fn unmanage_window(
   window: WindowContainer,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
+  info!("Unmanaging window: {window}");
+
   // Create iterator of parent, grandparent, and great-grandparent.
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
 

@@ -91,42 +91,58 @@ impl RemanageSnapGuard {
   }
 }
 
-/// Tracks how often a released window has been re-managed
-/// programmatically, so that a window which fights the WM over its own
-/// placement can be left alone instead of bouncing forever.
+/// Tracks how often the WM has placed a released window on its own
+/// initiative (re-managing it onto the primary monitor, or snapping it to
+/// the extent of a workspaceless monitor), so that a window which fights
+/// the WM over its own placement can be left alone instead of bouncing
+/// forever.
 ///
 /// Some applications move or resize themselves straight back after the WM
 /// has placed them, typically ones with a fixed size or aspect ratio (the
 /// Android emulator, for instance). With `multi_monitor_workspaces`
-/// disabled that becomes an endless release/re-manage tug-of-war: the WM
-/// pulls the window onto the primary monitor, the application puts it
-/// back, and every round is a fresh location change that drives the next
-/// one.
+/// disabled that becomes an endless tug-of-war: the WM pulls the window
+/// onto the primary monitor or snaps it to the monitor's extent, the
+/// application puts it back, and every round is a fresh location change
+/// (or re-show) that drives the next one.
+///
+/// Each time the limit is hit the window is left alone for twice as long
+/// as before, up to [`Self::MAX_SUPPRESSION`], so an application that
+/// never stops fighting produces a brief burst every few minutes rather
+/// than one every [`Self::SUPPRESSION`].
 #[derive(Debug)]
-struct RemanageChurn {
+struct PlacementChurn {
   /// The released native window.
   window: NativeWindow,
 
-  /// Programmatic re-manages counted since `since`.
+  /// Programmatic placements counted since `since`.
   count: u32,
 
   /// Start of the current counting period.
   since: Instant,
 
-  /// When the window may be re-managed programmatically again, once it
-  /// has been found to fight back.
+  /// When the window may be placed programmatically again, once it has
+  /// been found to fight back.
   suppressed_until: Option<Instant>,
+
+  /// How long the next suppression lasts. Doubles on every suppression
+  /// and resets once the window has been quiet for long enough.
+  next_suppression: Duration,
 }
 
-impl RemanageChurn {
-  /// Period over which programmatic re-manages are counted.
+impl PlacementChurn {
+  /// Period over which programmatic placements are counted.
   const PERIOD: Duration = Duration::from_secs(3);
 
-  /// Re-manages within `PERIOD` that mark a window as fighting back.
+  /// Placements within `PERIOD` that mark a window as fighting back.
   const LIMIT: u32 = 4;
 
-  /// How long a window found to be fighting back is left to the OS.
+  /// How long a window found to be fighting back is left to the OS the
+  /// first time.
   const SUPPRESSION: Duration = Duration::from_secs(30);
+
+  /// Upper bound on the suppression after repeated back-offs. Also the
+  /// quiet time after a lapsed suppression that resets the back-off.
+  const MAX_SUPPRESSION: Duration = Duration::from_mins(10);
 
   fn new(window: NativeWindow, now: Instant) -> Self {
     Self {
@@ -134,33 +150,57 @@ impl RemanageChurn {
       count: 0,
       since: now,
       suppressed_until: None,
+      next_suppression: Self::SUPPRESSION,
     }
   }
 
-  /// Whether re-management is currently suppressed.
+  /// Whether programmatic placement is currently suppressed.
   fn is_suppressed(&self, now: Instant) -> bool {
     self.suppressed_until.is_some_and(|until| now < until)
   }
 
-  /// Counts one programmatic re-manage, suppressing further ones if the
+  /// Counts one programmatic placement, suppressing further ones if the
   /// window has now exceeded [`Self::LIMIT`] within [`Self::PERIOD`].
-  fn record(&mut self, now: Instant) {
+  ///
+  /// Placements while already suppressed are ignored.
+  ///
+  /// Returns the suppression applied if this placement tipped the window
+  /// over the limit.
+  fn record(&mut self, now: Instant) -> Option<Duration> {
+    if self.is_suppressed(now) {
+      return None;
+    }
+
     // Start counting afresh after a lapsed suppression or a quiet period,
-    // so that an occasional re-manage never accumulates into a false
+    // so that an occasional placement never accumulates into a false
     // positive.
-    if self.suppressed_until.is_some()
-      || now.duration_since(self.since) > Self::PERIOD
-    {
+    if let Some(until) = self.suppressed_until {
+      // Keep backing off if the window resumed fighting shortly after
+      // being left alone; otherwise it has been quiet long enough to
+      // start over.
+      if now.saturating_duration_since(until) > Self::MAX_SUPPRESSION {
+        self.next_suppression = Self::SUPPRESSION;
+      }
+
       self.suppressed_until = None;
+      self.count = 0;
+      self.since = now;
+    } else if now.duration_since(self.since) > Self::PERIOD {
       self.count = 0;
       self.since = now;
     }
 
     self.count += 1;
 
-    if self.count >= Self::LIMIT {
-      self.suppressed_until = Some(now + Self::SUPPRESSION);
+    if self.count < Self::LIMIT {
+      return None;
     }
+
+    let suppression = self.next_suppression;
+    self.suppressed_until = Some(now + suppression);
+    self.next_suppression = (suppression * 2).min(Self::MAX_SUPPRESSION);
+
+    Some(suppression)
   }
 }
 
@@ -204,9 +244,9 @@ pub struct WmState {
   /// primary monitor.
   pub(crate) native_windows_pending_remanage: Vec<PendingRemanage>,
 
-  /// Re-manage churn per released window, used to stop bouncing windows
-  /// whose application keeps putting them back (see [`RemanageChurn`]).
-  remanage_churn: Vec<RemanageChurn>,
+  /// Placement churn per released window, used to stop bouncing windows
+  /// whose application keeps putting them back (see [`PlacementChurn`]).
+  placement_churn: Vec<PlacementChurn>,
 
   /// Windows-only: `HWND`s with an active `EVENT_SYSTEM_MOVESIZE*`
   /// session so `EVENT_OBJECT_LOCATIONCHANGE` can be told apart from
@@ -254,7 +294,7 @@ impl WmState {
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       native_windows_pending_remanage: Vec::new(),
-      remanage_churn: Vec::new(),
+      placement_churn: Vec::new(),
       native_windows_in_interactive_move: HashSet::default(),
       last_display_change_at: None,
       is_paused: false,
@@ -312,59 +352,59 @@ impl WmState {
     });
   }
 
-  /// Whether programmatic re-management of a released window is currently
-  /// suppressed because the window keeps putting itself back.
-  pub(crate) fn is_remanage_suppressed(
+  /// Whether programmatic placement of a released window (re-managing it
+  /// onto the primary monitor, or snapping it to a workspaceless monitor's
+  /// extent) is currently suppressed because the window keeps putting
+  /// itself back.
+  pub(crate) fn is_placement_suppressed(
     &self,
     native_window: &NativeWindow,
   ) -> bool {
     let now = Instant::now();
 
     self
-      .remanage_churn
+      .placement_churn
       .iter()
       .find(|entry| entry.window == *native_window)
       .is_some_and(|entry| entry.is_suppressed(now))
   }
 
-  /// Counts a programmatic re-manage of a released window.
+  /// Counts a programmatic placement of a released window.
   ///
-  /// Once a window has been re-managed [`RemanageChurn::LIMIT`] times
-  /// within [`RemanageChurn::PERIOD`], further programmatic re-manages are
-  /// suppressed and [`Self::is_remanage_suppressed`] starts reporting
+  /// Once a window has been placed [`PlacementChurn::LIMIT`] times within
+  /// [`PlacementChurn::PERIOD`], further programmatic placements are
+  /// suppressed and [`Self::is_placement_suppressed`] starts reporting
   /// `true`.
-  pub(crate) fn record_programmatic_remanage(
+  pub(crate) fn record_programmatic_placement(
     &mut self,
     native_window: &NativeWindow,
   ) {
     let now = Instant::now();
 
     if !self
-      .remanage_churn
+      .placement_churn
       .iter()
       .any(|entry| entry.window == *native_window)
     {
       self
-        .remanage_churn
-        .push(RemanageChurn::new(native_window.clone(), now));
+        .placement_churn
+        .push(PlacementChurn::new(native_window.clone(), now));
     }
 
     let Some(entry) = self
-      .remanage_churn
+      .placement_churn
       .iter_mut()
       .find(|entry| entry.window == *native_window)
     else {
       return;
     };
 
-    entry.record(now);
-
-    if entry.is_suppressed(now) {
+    if let Some(suppression) = entry.record(now) {
       warn!(
-        "Window {:?} keeps moving itself back after being placed; \
+        "Window {:?} keeps putting itself back after being placed; \
          leaving it to the OS for {}s.",
         native_window.id(),
-        RemanageChurn::SUPPRESSION.as_secs()
+        suppression.as_secs()
       );
     }
   }
@@ -373,12 +413,12 @@ impl WmState {
   ///
   /// Called when the user moves the window themselves, which always takes
   /// precedence over the suppression.
-  pub(crate) fn clear_remanage_churn(
+  pub(crate) fn clear_placement_churn(
     &mut self,
     native_window: &NativeWindow,
   ) {
     self
-      .remanage_churn
+      .placement_churn
       .retain(|entry| entry.window != *native_window);
   }
 
@@ -1167,7 +1207,7 @@ impl WmState {
       .native_windows_pending_remanage
       .retain(|entry| entry.window.is_valid());
 
-    self.remanage_churn.retain(|entry| entry.window.is_valid());
+    self.placement_churn.retain(|entry| entry.window.is_valid());
 
     Ok(())
   }
@@ -1203,19 +1243,35 @@ impl Drop for WmState {
 mod tests {
   use super::*;
 
-  fn churn_at(now: Instant) -> RemanageChurn {
-    RemanageChurn::new(NativeWindow::mock(), now)
+  fn churn_at(now: Instant) -> PlacementChurn {
+    PlacementChurn::new(NativeWindow::mock(), now)
+  }
+
+  /// Records `count` placements 100ms apart, starting at `start`.
+  ///
+  /// Returns the suppression applied by the last placement, if any.
+  fn record_placements(
+    churn: &mut PlacementChurn,
+    start: Instant,
+    count: u32,
+  ) -> Option<Duration> {
+    (0..count)
+      .map(|index| {
+        churn.record(start + Duration::from_millis(u64::from(index) * 100))
+      })
+      .last()
+      .flatten()
   }
 
   #[test]
-  fn churn_allows_occasional_remanages() {
+  fn churn_allows_occasional_placements() {
     let start = Instant::now();
     let mut churn = churn_at(start);
 
-    for index in 0..RemanageChurn::LIMIT - 1 {
-      churn.record(start + Duration::from_millis(u64::from(index) * 100));
-    }
+    let applied =
+      record_placements(&mut churn, start, PlacementChurn::LIMIT - 1);
 
+    assert_eq!(applied, None);
     assert!(!churn.is_suppressed(start + Duration::from_millis(500)));
   }
 
@@ -1224,27 +1280,39 @@ mod tests {
     let start = Instant::now();
     let mut churn = churn_at(start);
 
-    for index in 0..RemanageChurn::LIMIT {
-      churn.record(start + Duration::from_millis(u64::from(index) * 100));
-    }
+    let applied =
+      record_placements(&mut churn, start, PlacementChurn::LIMIT);
 
+    assert_eq!(applied, Some(PlacementChurn::SUPPRESSION));
     assert!(churn.is_suppressed(start + Duration::from_millis(500)));
+  }
+
+  #[test]
+  fn churn_ignores_placements_while_suppressed() {
+    let start = Instant::now();
+    let mut churn = churn_at(start);
+    record_placements(&mut churn, start, PlacementChurn::LIMIT);
+
+    let during = start + Duration::from_secs(1);
+    assert_eq!(churn.record(during), None);
+
+    // The original suppression is neither lifted nor extended.
+    let near_end = start + PlacementChurn::SUPPRESSION;
+    assert!(churn.is_suppressed(near_end));
+    assert!(!churn.is_suppressed(near_end + Duration::from_secs(1)));
   }
 
   #[test]
   fn churn_resets_after_a_quiet_period() {
     let start = Instant::now();
     let mut churn = churn_at(start);
+    record_placements(&mut churn, start, PlacementChurn::LIMIT - 1);
 
-    for index in 0..RemanageChurn::LIMIT - 1 {
-      churn.record(start + Duration::from_millis(u64::from(index) * 100));
-    }
-
-    // A re-manage well after the counting period starts a fresh count
+    // A placement well after the counting period starts a fresh count
     // rather than tipping the window over the limit.
-    let later = start + RemanageChurn::PERIOD + Duration::from_secs(1);
-    churn.record(later);
+    let later = start + PlacementChurn::PERIOD + Duration::from_secs(1);
 
+    assert_eq!(churn.record(later), None);
     assert!(!churn.is_suppressed(later));
   }
 
@@ -1252,17 +1320,67 @@ mod tests {
   fn churn_restarts_counting_once_suppression_lapses() {
     let start = Instant::now();
     let mut churn = churn_at(start);
-
-    for index in 0..RemanageChurn::LIMIT {
-      churn.record(start + Duration::from_millis(u64::from(index) * 100));
-    }
+    record_placements(&mut churn, start, PlacementChurn::LIMIT);
 
     let lapsed =
-      start + RemanageChurn::SUPPRESSION + Duration::from_secs(1);
+      start + PlacementChurn::SUPPRESSION + Duration::from_secs(1);
     assert!(!churn.is_suppressed(lapsed));
 
-    churn.record(lapsed);
+    assert_eq!(churn.record(lapsed), None);
     assert!(!churn.is_suppressed(lapsed));
+  }
+
+  #[test]
+  fn churn_backs_off_when_the_window_keeps_fighting() {
+    let start = Instant::now();
+    let mut churn = churn_at(start);
+    record_placements(&mut churn, start, PlacementChurn::LIMIT);
+
+    let second =
+      start + PlacementChurn::SUPPRESSION + Duration::from_secs(1);
+    let applied =
+      record_placements(&mut churn, second, PlacementChurn::LIMIT);
+
+    assert_eq!(applied, Some(PlacementChurn::SUPPRESSION * 2));
+    assert!(churn.is_suppressed(second + PlacementChurn::SUPPRESSION * 2));
+  }
+
+  #[test]
+  fn churn_caps_the_back_off() {
+    let mut at = Instant::now();
+    let mut churn = churn_at(at);
+    let mut applied = None;
+
+    for _ in 0..10 {
+      applied = record_placements(&mut churn, at, PlacementChurn::LIMIT);
+      let Some(suppression) = applied else {
+        panic!("Reaching the limit should always suppress.");
+      };
+
+      at += suppression + Duration::from_secs(1);
+    }
+
+    assert_eq!(applied, Some(PlacementChurn::MAX_SUPPRESSION));
+  }
+
+  #[test]
+  fn churn_forgets_the_back_off_after_a_long_quiet_period() {
+    let start = Instant::now();
+    let mut churn = churn_at(start);
+    record_placements(&mut churn, start, PlacementChurn::LIMIT);
+
+    let second =
+      start + PlacementChurn::SUPPRESSION + Duration::from_secs(1);
+    record_placements(&mut churn, second, PlacementChurn::LIMIT);
+
+    let quiet = second
+      + PlacementChurn::SUPPRESSION * 2
+      + PlacementChurn::MAX_SUPPRESSION
+      + Duration::from_secs(2);
+    let applied =
+      record_placements(&mut churn, quiet, PlacementChurn::LIMIT);
+
+    assert_eq!(applied, Some(PlacementChurn::SUPPRESSION));
   }
 
   fn guard_expiring_in(duration: Duration) -> RemanageSnapGuard {

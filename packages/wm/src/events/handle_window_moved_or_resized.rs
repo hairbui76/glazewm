@@ -152,6 +152,10 @@ pub fn handle_window_moved_or_resized(
       // change settles, just re-assert the window's slot instead; genuine
       // user moves onto the monitor are handled once settling ends.
       if state.is_display_change_settling() {
+        tracing::debug!(
+          "Re-asserting slot of window found on {nearest_monitor} while \
+           a display change settles: {window}"
+        );
         state.pending_sync.queue_container_to_redraw(window.clone());
         return Ok(());
       }
@@ -160,7 +164,12 @@ pub fn handle_window_moved_or_resized(
       // Snapping it to the monitor's workspace extent only provokes
       // another round of the tug-of-war, since such windows reject the
       // size and resize themselves straight back.
-      let should_snap = !state.is_remanage_suppressed(&window.native());
+      let should_snap = !state.is_placement_suppressed(&window.native());
+
+      tracing::info!(
+        "Window moved onto workspaceless {nearest_monitor}; releasing it \
+         to the OS (snap: {should_snap}): {window}"
+      );
 
       state.register_native_window_pending_remanage(
         window.native().clone(),
@@ -275,6 +284,11 @@ pub fn handle_window_moved_or_resized(
         return Ok(());
       }
 
+      tracing::info!(
+        "Window entered fullscreen (maximized: {is_maximized}, frame: \
+         {frame_position:?}): {window}"
+      );
+
       let fullscreen_state = if let WindowState::Fullscreen(
         fullscreen_state,
       ) = window.state()
@@ -316,7 +330,10 @@ pub fn handle_window_moved_or_resized(
     match window.state() {
       WindowState::Fullscreen(_) => {
         // Window is no longer maximized/fullscreen and should be restored.
-        tracing::info!("Restoring window from fullscreen: {window}");
+        tracing::info!(
+          "Restoring window from fullscreen (frame: {frame_position:?}): \
+           {window}"
+        );
 
         update_window_state(
           window.clone(),
@@ -410,7 +427,7 @@ fn maybe_remanage_native_window_after_move_to_primary(
   // A move the user made themselves always takes precedence, and clears
   // any suppression left over from an earlier tug-of-war.
   if is_interactive_finish {
-    state.clear_remanage_churn(native_window);
+    state.clear_placement_churn(native_window);
   }
 
   // Don't re-manage on transient OS moves while a display change settles;
@@ -438,7 +455,11 @@ fn maybe_remanage_native_window_after_move_to_primary(
 
   // Leave alone a window that has already been pulled back and forth too
   // many times; it is the application, not the user, moving it.
-  if is_programmatic_move && state.is_remanage_suppressed(native_window) {
+  if is_programmatic_move && state.is_placement_suppressed(native_window) {
+    tracing::debug!(
+      "Skipping re-manage of suppressed window {:?} on {nearest_monitor}.",
+      native_window.id()
+    );
     return Ok(());
   }
 
@@ -446,8 +467,14 @@ fn maybe_remanage_native_window_after_move_to_primary(
     return Ok(());
   }
 
+  tracing::info!(
+    "Re-managing window {:?} moved onto {nearest_monitor} \
+     (programmatic: {is_programmatic_move}).",
+    native_window.id()
+  );
+
   if is_programmatic_move {
-    state.record_programmatic_remanage(native_window);
+    state.record_programmatic_placement(native_window);
   }
 
   manage_window(native_window.clone(), None, state, config)

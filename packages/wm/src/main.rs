@@ -14,6 +14,7 @@ use std::{env, path::PathBuf, process, time::Duration};
 use anyhow::{Context, Error};
 use tokio::{process::Command, signal};
 use tracing::Level;
+use tracing_appender::rolling::{self, RollingFileAppender, Rotation};
 use tracing_subscriber::{
   fmt::{self, writer::MakeWriterExt},
   layer::SubscriberExt,
@@ -288,16 +289,32 @@ async fn start_wm(
   Ok(())
 }
 
+/// Number of daily log files kept in `~/.glzr/glazewm/logs/`.
+const LOG_FILE_RETENTION: usize = 7;
+
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error logs are saved to `~/.glzr/glazewm/errors.log`.
+/// Logs are written to stdout and to a daily log file in
+/// `~/.glzr/glazewm/logs/` (the last `LOG_FILE_RETENTION` days are kept),
+/// both at the given verbosity level. Error logs are additionally saved to
+/// `~/.glzr/glazewm/errors.log`.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
-  let error_log_dir = home::home_dir()
+  let log_dir = home::home_dir()
     .context("Unable to get home directory.")?
     .join(".glzr/glazewm/");
 
-  let error_writer =
-    tracing_appender::rolling::never(error_log_dir, "errors.log");
+  let error_writer = rolling::never(&log_dir, "errors.log");
+
+  // Persistent log of regular activity, so that intermittent problems
+  // (e.g. a window bouncing between states) can be diagnosed after the
+  // fact without the WM having to be run from a console.
+  let file_writer = RollingFileAppender::builder()
+    .rotation(Rotation::DAILY)
+    .filename_prefix("glazewm")
+    .filename_suffix("log")
+    .max_log_files(LOG_FILE_RETENTION)
+    .build(log_dir.join("logs"))
+    .context("Failed to initialize log file.")?;
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -306,8 +323,15 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_writer(std::io::stdout.with_max_level(verbosity.level())),
     )
     .with(
+      // Output to daily log file with specified verbosity level.
+      fmt::Layer::new()
+        .with_ansi(false)
+        .with_writer(file_writer.with_max_level(verbosity.level())),
+    )
+    .with(
       // Output to error log file.
       fmt::Layer::new()
+        .with_ansi(false)
         .with_writer(error_writer.with_max_level(Level::ERROR)),
     );
 

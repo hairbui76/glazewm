@@ -85,10 +85,27 @@ pub fn manage_window(
         config,
       ) == WindowState::Tiling;
 
-      let should_snap =
-        would_be_tiled && !is_owned_secondary_window(&native_window);
+      // A window that keeps putting itself back after being snapped is
+      // left at its own size (see `WmState::is_placement_suppressed`).
+      let should_snap = would_be_tiled
+        && !is_owned_secondary_window(&native_window)
+        && !state.is_placement_suppressed(&native_window);
+
+      info!(
+        "Leaving window {:?} on workspaceless {monitor} to the OS (snap: \
+         {should_snap}): process={}, title={}",
+        native_window.id(),
+        native_properties.process_name,
+        native_properties.title
+      );
 
       if should_snap {
+        // The snap is the WM placing the window on its own initiative. An
+        // application that re-shows its window after every snap would
+        // otherwise be snapped back forever, so it counts towards the
+        // window's placement churn.
+        state.record_programmatic_placement(&native_window);
+
         // Snap the window to the monitor's single-window workspace extent
         // so it fills the screen like a tiled window, matching the
         // move/unmanage path, then leave it OS-managed.
