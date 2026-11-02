@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.15.3](https://github.com/hairbui76/glazewm/compare/v3.15.2...v3.15.3) (2026-11-02)
+
+
+### Bug fixes
+
+* back off longer from windows that keep putting themselves back ([0a40547](https://github.com/hairbui76/glazewm/commit/0a405475751433027ccb9e77c742fbb15f5a6367))
+
 ## [3.15.2](https://github.com/hairbui76/glazewm/compare/v3.15.1...v3.15.2) (2026-10-05)
 
 
