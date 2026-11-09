@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.15.4](https://github.com/hairbui76/glazewm/compare/v3.15.3...v3.15.4) (2026-11-09)
+
+
+### Bug fixes
+
+* stop reading the WM's own async placements as app moves ([dd2ca1b](https://github.com/hairbui76/glazewm/commit/dd2ca1b107f9aff2585a44f4e842f9fee0a50166))
+
 ## [3.15.3](https://github.com/hairbui76/glazewm/compare/v3.15.2...v3.15.3) (2026-11-02)
 
 
