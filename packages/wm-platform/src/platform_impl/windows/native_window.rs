@@ -6,11 +6,17 @@ use windows::{
   core::PWSTR,
   Win32::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
-    Graphics::Dwm::{
-      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
-      DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
-      DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
-      DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+    Graphics::{
+      Dwm::{
+        DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
+        DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
+        DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+      },
+      Gdi::{
+        GetMonitorInfoW, MonitorFromRect, MONITORINFO,
+        MONITOR_DEFAULTTOPRIMARY,
+      },
     },
     System::Threading::{
       OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -36,7 +42,7 @@ use windows::{
         SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
         SW_SHOWNA, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE,
         WM_CLOSE, WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
-        WS_THICKFRAME,
+        WS_EX_TOOLWINDOW, WS_THICKFRAME,
       },
     },
   },
@@ -442,16 +448,28 @@ impl NativeWindow {
         Ok(())
       }
       Some(rect) => {
+        // `rcNormalPosition` is in workspace coordinates rather than
+        // screen coordinates (except for tool windows). Passing screen
+        // coordinates would restore the window offset by the inset of
+        // the monitor's work area, e.g. by the height of an appbar
+        // docked at the top.
+        let normal_position = if self.has_window_style_ex(WS_EX_TOOLWINDOW)
+        {
+          rect.clone()
+        } else {
+          Self::to_workspace_coordinates(rect)?
+        };
+
         let placement = WINDOWPLACEMENT {
           #[allow(clippy::cast_possible_truncation)]
           length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
           flags: WPF_ASYNCWINDOWPLACEMENT,
           showCmd: SW_RESTORE.0 as u32,
           rcNormalPosition: RECT {
-            left: rect.left,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
+            left: normal_position.left,
+            top: normal_position.top,
+            right: normal_position.right,
+            bottom: normal_position.bottom,
           },
           ..Default::default()
         };
@@ -460,6 +478,48 @@ impl NativeWindow {
         Ok(())
       }
     }
+  }
+
+  /// Converts a rect in screen coordinates to the workspace coordinates
+  /// used by `WINDOWPLACEMENT::rcNormalPosition`.
+  ///
+  /// Workspace coordinates are relative to the work area of the monitor
+  /// containing the rect (or the primary monitor if none does), i.e. they
+  /// are offset from screen coordinates by the inset of that monitor's
+  /// work area from its bounds.
+  fn to_workspace_coordinates(rect: &Rect) -> crate::Result<Rect> {
+    let screen_rect = RECT {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+    };
+
+    let mut monitor_info = MONITORINFO {
+      #[allow(clippy::cast_possible_truncation)]
+      cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+      ..Default::default()
+    };
+
+    unsafe {
+      let monitor = MonitorFromRect(
+        std::ptr::from_ref(&screen_rect),
+        MONITOR_DEFAULTTOPRIMARY,
+      );
+
+      GetMonitorInfoW(monitor, &raw mut monitor_info)
+    }
+    .ok()?;
+
+    let offset_x = monitor_info.rcWork.left - monitor_info.rcMonitor.left;
+    let offset_y = monitor_info.rcWork.top - monitor_info.rcMonitor.top;
+
+    Ok(Rect::from_ltrb(
+      rect.left - offset_x,
+      rect.top - offset_y,
+      rect.right - offset_x,
+      rect.bottom - offset_y,
+    ))
   }
 
   /// Implements [`NativeWindowWindowsExt::set_cloaked`].

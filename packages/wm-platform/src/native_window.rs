@@ -115,9 +115,10 @@ pub trait NativeWindowWindowsExt {
 
   /// Restores the window (unminimizes and unmaximizes).
   ///
-  /// If `outer_frame` is provided, the window will be restored to the
-  /// specified position. This avoids flickering compared to restoring
-  /// and then repositioning the window.
+  /// If `outer_frame` is provided (in screen coordinates, inclusive of
+  /// shadow borders), the window will be restored to the specified
+  /// position. This avoids flickering compared to restoring and then
+  /// repositioning the window.
   ///
   /// # Platform-specific
   ///

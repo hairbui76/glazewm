@@ -204,6 +204,156 @@ impl PlacementChurn {
   }
 }
 
+/// Placements the WM has requested for managed windows but not yet seen
+/// land.
+///
+/// Window positions are applied asynchronously (`SWP_ASYNCWINDOWPOS`), so
+/// the OS reports the resulting move some time later - possibly after the
+/// WM has already requested a different placement for the same window.
+/// Remembering what was requested lets `WindowMovedOrResized` events for
+/// the WM's own placements be told apart from the application or user
+/// moving the window.
+///
+/// Without this, a stale echo of a superseded placement is read as the
+/// window entering or leaving fullscreen. That flips the state back and
+/// issues the opposite placement, whose echo flips it again, bouncing the
+/// window between the two placements indefinitely.
+#[derive(Debug, Default)]
+struct PendingPlacements {
+  /// Requested placements, oldest first.
+  entries: Vec<PendingPlacement>,
+}
+
+/// A single placement requested from the OS (see [`PendingPlacements`]).
+#[derive(Debug)]
+struct PendingPlacement {
+  window_id: WindowId,
+
+  /// Frame the window should report once the placement has landed.
+  frame: Rect,
+
+  /// `frame` inclusive of the window's shadow borders, i.e. the rect that
+  /// was passed to the OS. The reported frame falls back to this when the
+  /// OS can't provide the window's extended frame bounds.
+  outer_frame: Rect,
+
+  requested_at: Instant,
+}
+
+impl PendingPlacements {
+  /// How long a requested placement is remembered for. Async placements
+  /// normally land within milliseconds; a move matching an older request
+  /// is treated as the application's own.
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  /// Leeway when matching a reported frame against a requested one, since
+  /// the OS can be off by up to 1px when positioning windows.
+  const TOLERANCE_PX: i32 = 1;
+
+  /// Upper bound on remembered placements per window, so that requests
+  /// which never produce a move event (e.g. because the window was
+  /// already in place) can't accumulate.
+  const MAX_PER_WINDOW: usize = 8;
+
+  /// Remembers a placement requested at `now`.
+  fn record(
+    &mut self,
+    window_id: WindowId,
+    frame: Rect,
+    outer_frame: Rect,
+    now: Instant,
+  ) {
+    self.prune(now);
+
+    let count = self
+      .entries
+      .iter()
+      .filter(|entry| entry.window_id == window_id)
+      .count();
+
+    if count >= Self::MAX_PER_WINDOW {
+      if let Some(oldest) = self
+        .entries
+        .iter()
+        .position(|entry| entry.window_id == window_id)
+      {
+        self.entries.remove(oldest);
+      }
+    }
+
+    self.entries.push(PendingPlacement {
+      window_id,
+      frame,
+      outer_frame,
+      requested_at: now,
+    });
+  }
+
+  /// Takes the placement that a reported `frame` of `window_id` is the
+  /// result of.
+  ///
+  /// Placements land in the order they were requested, so the oldest
+  /// matching one is taken. Placements requested before it are dropped as
+  /// well, since they have either landed without a distinct move event or
+  /// were overridden before they could land.
+  ///
+  /// Returns whether `frame` matched a pending placement.
+  fn take(
+    &mut self,
+    window_id: WindowId,
+    frame: &Rect,
+    now: Instant,
+  ) -> bool {
+    self.prune(now);
+
+    let Some(matched) = self.entries.iter().position(|entry| {
+      entry.window_id == window_id && entry.matches(frame)
+    }) else {
+      return false;
+    };
+
+    let mut position = 0;
+    self.entries.retain(|entry| {
+      let keep = entry.window_id != window_id || position > matched;
+      position += 1;
+      keep
+    });
+
+    true
+  }
+
+  /// Forgets all placements requested for `window_id`.
+  fn clear(&mut self, window_id: WindowId) {
+    self.entries.retain(|entry| entry.window_id != window_id);
+  }
+
+  /// Drops placements older than [`Self::TIMEOUT`].
+  fn prune(&mut self, now: Instant) {
+    self.entries.retain(|entry| {
+      now.saturating_duration_since(entry.requested_at) <= Self::TIMEOUT
+    });
+  }
+}
+
+impl PendingPlacement {
+  /// Whether a reported `frame` is the result of this placement.
+  fn matches(&self, frame: &Rect) -> bool {
+    Self::rects_match(&self.frame, frame)
+      || Self::rects_match(&self.outer_frame, frame)
+  }
+
+  /// Whether two rects are equal on every edge to within
+  /// [`PendingPlacements::TOLERANCE_PX`].
+  fn rects_match(a: &Rect, b: &Rect) -> bool {
+    let tolerance = PendingPlacements::TOLERANCE_PX;
+
+    (a.left - b.left).abs() <= tolerance
+      && (a.top - b.top).abs() <= tolerance
+      && (a.right - b.right).abs() <= tolerance
+      && (a.bottom - b.bottom).abs() <= tolerance
+  }
+}
+
 pub struct WmState {
   /// Root node of the container tree. Monitors are the children of the
   /// root node, followed by workspaces, then split containers/windows.
@@ -247,6 +397,11 @@ pub struct WmState {
   /// Placement churn per released window, used to stop bouncing windows
   /// whose application keeps putting them back (see [`PlacementChurn`]).
   placement_churn: Vec<PlacementChurn>,
+
+  /// Placements requested for managed windows that have not yet been seen
+  /// landing, used to tell the WM's own moves apart from the
+  /// application's (see [`PendingPlacements`]).
+  pending_placements: PendingPlacements,
 
   /// Windows-only: `HWND`s with an active `EVENT_SYSTEM_MOVESIZE*`
   /// session so `EVENT_OBJECT_LOCATIONCHANGE` can be told apart from
@@ -295,6 +450,7 @@ impl WmState {
       ignored_windows: Vec::new(),
       native_windows_pending_remanage: Vec::new(),
       placement_churn: Vec::new(),
+      pending_placements: PendingPlacements::default(),
       native_windows_in_interactive_move: HashSet::default(),
       last_display_change_at: None,
       is_paused: false,
@@ -420,6 +576,49 @@ impl WmState {
     self
       .placement_churn
       .retain(|entry| entry.window != *native_window);
+  }
+
+  /// Remembers a placement the WM just requested for `window_id`, so that
+  /// the resulting move event can be recognised as the WM's own (see
+  /// [`PendingPlacements`]).
+  ///
+  /// `frame` is the frame the window should report once the placement
+  /// lands, and `outer_frame` the same inclusive of its shadow borders.
+  pub(crate) fn record_pending_placement(
+    &mut self,
+    window_id: WindowId,
+    frame: Rect,
+    outer_frame: Rect,
+  ) {
+    self.pending_placements.record(
+      window_id,
+      frame,
+      outer_frame,
+      Instant::now(),
+    );
+  }
+
+  /// Whether a reported `frame` of `window_id` is the result of a
+  /// placement the WM requested, consuming that placement.
+  ///
+  /// Such moves say nothing about what the application or user wants the
+  /// window to be, so callers skip inferring window state from them.
+  pub(crate) fn take_pending_placement(
+    &mut self,
+    window_id: WindowId,
+    frame: &Rect,
+  ) -> bool {
+    self
+      .pending_placements
+      .take(window_id, frame, Instant::now())
+  }
+
+  /// Forgets any placements requested for `window_id`.
+  ///
+  /// Called once the window is unmanaged, or when the user takes over by
+  /// dragging it.
+  pub(crate) fn clear_pending_placements(&mut self, window_id: WindowId) {
+    self.pending_placements.clear(window_id);
   }
 
   /// If `native_window` is registered for re-management, drops that entry
@@ -1225,7 +1424,14 @@ impl Drop for WmState {
         }
       }
 
-      // Reset any effects on Windows.
+      // Make the window visible again. Windows on non-displayed
+      // workspaces are hidden by either cloaking or hiding them (depending
+      // on `hide_method`), so both have to be undone - showing a cloaked
+      // window leaves it invisible.
+      if let Err(err) = window.native().set_cloaked(false) {
+        warn!("Failed to uncloak window: {:?}", err);
+      }
+
       if let Err(err) = window.native().show() {
         warn!("Failed to show window: {:?}", err);
       }
@@ -1381,6 +1587,169 @@ mod tests {
       record_placements(&mut churn, quiet, PlacementChurn::LIMIT);
 
     assert_eq!(applied, Some(PlacementChurn::SUPPRESSION));
+  }
+
+  const WINDOW_A: WindowId = WindowId(1);
+  const WINDOW_B: WindowId = WindowId(2);
+
+  /// A tiling slot inside the workspace.
+  fn slot() -> Rect {
+    Rect::from_ltrb(6, 53, 1914, 1194)
+  }
+
+  /// The rect of a monitor, i.e. a non-maximized fullscreen placement.
+  fn monitor() -> Rect {
+    Rect::from_ltrb(0, 0, 1920, 1200)
+  }
+
+  /// Records a placement for `WINDOW_A` whose outer frame is 8px wider on
+  /// each side.
+  fn record_a(
+    placements: &mut PendingPlacements,
+    frame: Rect,
+    now: Instant,
+  ) {
+    let outer_frame = Rect::from_ltrb(
+      frame.left - 8,
+      frame.top - 8,
+      frame.right + 8,
+      frame.bottom + 8,
+    );
+
+    placements.record(WINDOW_A, frame, outer_frame, now);
+  }
+
+  #[test]
+  fn placement_matches_frame_within_tolerance() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+    record_a(&mut placements, slot(), now);
+
+    let off_by_one = Rect::from_ltrb(7, 52, 1915, 1193);
+    assert!(placements.take(WINDOW_A, &off_by_one, now));
+
+    record_a(&mut placements, slot(), now);
+
+    let off_by_two = Rect::from_ltrb(8, 53, 1914, 1194);
+    assert!(!placements.take(WINDOW_A, &off_by_two, now));
+  }
+
+  #[test]
+  fn placement_matches_outer_frame() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+    record_a(&mut placements, slot(), now);
+
+    let outer_frame = Rect::from_ltrb(-2, 45, 1922, 1202);
+    assert!(placements.take(WINDOW_A, &outer_frame, now));
+  }
+
+  #[test]
+  fn placement_is_consumed_once_taken() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+    record_a(&mut placements, slot(), now);
+
+    assert!(placements.take(WINDOW_A, &slot(), now));
+    assert!(!placements.take(WINDOW_A, &slot(), now));
+  }
+
+  #[test]
+  fn placements_are_taken_in_request_order() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+
+    // Tiling -> fullscreen -> tiling in quick succession, before any of
+    // the placements has landed.
+    record_a(&mut placements, slot(), now);
+    record_a(&mut placements, monitor(), now);
+    record_a(&mut placements, slot(), now);
+
+    // The echoes then land in the same order.
+    assert!(placements.take(WINDOW_A, &slot(), now));
+    assert!(placements.take(WINDOW_A, &monitor(), now));
+    assert!(placements.take(WINDOW_A, &slot(), now));
+    assert!(!placements.take(WINDOW_A, &slot(), now));
+  }
+
+  #[test]
+  fn taking_a_placement_drops_older_ones() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+
+    // The first placement never produces a move event (e.g. the window
+    // was already there), so the second one lands first.
+    record_a(&mut placements, slot(), now);
+    record_a(&mut placements, monitor(), now);
+
+    assert!(placements.take(WINDOW_A, &monitor(), now));
+    assert!(!placements.take(WINDOW_A, &slot(), now));
+  }
+
+  #[test]
+  fn placements_only_match_their_own_window() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+    record_a(&mut placements, slot(), now);
+
+    assert!(!placements.take(WINDOW_B, &slot(), now));
+    assert!(placements.take(WINDOW_A, &slot(), now));
+  }
+
+  #[test]
+  fn placements_expire() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+    record_a(&mut placements, slot(), now);
+
+    let later =
+      now + PendingPlacements::TIMEOUT + Duration::from_millis(1);
+    assert!(!placements.take(WINDOW_A, &slot(), later));
+  }
+
+  #[test]
+  fn placements_per_window_are_capped() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+
+    for index in 0..=PendingPlacements::MAX_PER_WINDOW {
+      #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap
+      )]
+      let offset = index as i32 * 10;
+      record_a(&mut placements, Rect::from_xy(offset, 0, 100, 100), now);
+    }
+
+    assert_eq!(
+      placements.entries.len(),
+      PendingPlacements::MAX_PER_WINDOW
+    );
+
+    // The oldest placement was dropped to make room.
+    assert!(!placements.take(
+      WINDOW_A,
+      &Rect::from_xy(0, 0, 100, 100),
+      now
+    ));
+    assert!(placements.take(
+      WINDOW_A,
+      &Rect::from_xy(10, 0, 100, 100),
+      now
+    ));
+  }
+
+  #[test]
+  fn clear_forgets_only_the_given_window() {
+    let now = Instant::now();
+    let mut placements = PendingPlacements::default();
+    record_a(&mut placements, slot(), now);
+    placements.record(WINDOW_B, monitor(), monitor(), now);
+
+    placements.clear(WINDOW_A);
+
+    assert!(!placements.take(WINDOW_A, &slot(), now));
+    assert!(placements.take(WINDOW_B, &monitor(), now));
   }
 
   fn guard_expiring_in(duration: Duration) -> RemanageSnapGuard {

@@ -32,6 +32,10 @@ pub fn handle_window_moved_or_resized(
     state
       .native_windows_in_interactive_move
       .insert(native_window.id());
+
+    // The user is taking over, so whatever the WM still had in flight
+    // for the window no longer matters.
+    state.clear_pending_placements(native_window.id());
   }
   if is_interactive_end {
     state
@@ -213,6 +217,22 @@ pub fn handle_window_moved_or_resized(
         window.set_display_state(display_state);
         return Ok(());
       }
+    }
+
+    // Positions are applied asynchronously, so a move or resize the WM
+    // itself requested is reported some time later - possibly after the
+    // WM has since requested a different placement for the window. Such
+    // an echo says nothing about what the application or user wants, so
+    // it must not be read as the window entering/leaving fullscreen or
+    // being moved. Otherwise a stale echo flips the state back, which
+    // issues the opposite placement, whose echo flips it again, and the
+    // window bounces between the two placements indefinitely.
+    if state.take_pending_placement(window.native().id(), &frame_position)
+    {
+      tracing::debug!(
+        "Ignoring move to {frame_position:?} requested by the WM: {window}"
+      );
+      return Ok(());
     }
 
     let should_fullscreen = {

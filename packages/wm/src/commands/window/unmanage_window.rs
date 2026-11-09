@@ -128,6 +128,8 @@ pub fn unmanage_window(
 ) -> anyhow::Result<()> {
   info!("Unmanaging window: {window}");
 
+  state.clear_pending_placements(window.native().id());
+
   // Create iterator of parent, grandparent, and great-grandparent.
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
 

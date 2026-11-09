@@ -5,6 +5,8 @@ use wm_common::{
 };
 use wm_platform::{
   CornerStyle, NativeWindowWindowsExt, OpacityValue, Rect, WindowZOrder,
+  SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+  SWP_NOSENDCHANGING, WS_MAXIMIZEBOX,
 };
 
 use crate::{
@@ -277,10 +279,24 @@ fn redraw_containers(
       DisplayState::Showing | DisplayState::Shown
     );
 
-    if let Err(err) =
-      reposition_window(window, *hide_corner, &z_order, is_visible, config)
-    {
-      tracing::warn!("Failed to set window position: {}", err);
+    match reposition_window(
+      window,
+      *hide_corner,
+      &z_order,
+      is_visible,
+      config,
+    ) {
+      // Remember what was asked of the OS, so that the resulting move
+      // event isn't mistaken for the application moving the window.
+      Ok(Some(placement)) => state.record_pending_placement(
+        window.native().id(),
+        placement.frame,
+        placement.outer_frame,
+      ),
+      Ok(None) => {}
+      Err(err) => {
+        tracing::warn!("Failed to set window position: {}", err);
+      }
     }
 
     // Whether the window is either transitioning to or from fullscreen.
@@ -323,13 +339,31 @@ fn redraw_containers(
   Ok(())
 }
 
+/// Rects of a placement that `reposition_window` issued to the OS.
+struct IssuedPlacement {
+  /// Frame the window should report once the placement has landed.
+  frame: Rect,
+
+  /// `frame` inclusive of the window's shadow borders, i.e. the rect
+  /// passed to the OS.
+  outer_frame: Rect,
+}
+
+/// Positions the window according to its state, and shows or hides it.
+///
+/// Returns the placement issued, or `None` if the window's position was
+/// left alone (e.g. it only needed to be cloaked or minimized).
 fn reposition_window(
   window: &WindowContainer,
   hide_corner: HideCorner,
   z_order: &WindowZOrder,
   is_visible: bool,
   config: &UserConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<IssuedPlacement>> {
+  // The frame the window is expected to report, and the same inclusive
+  // of its shadow borders (which is what the OS is asked to position).
+  let frame = window.to_rect()?.apply_delta(&window.border_delta(), None);
+
   let rect = window
     .to_rect()?
     .apply_delta(&window.total_border_delta()?, None);
@@ -347,120 +381,136 @@ fn reposition_window(
       .native_properties()
       .working_area;
 
-    let frame = window.native_properties().frame;
+    let current_frame = window.native_properties().frame;
 
     let position_y = monitor_rect.bottom - VISIBLE_SLIVER;
     let position_x = match hide_corner {
       HideCorner::BottomLeft => {
-        monitor_rect.left + VISIBLE_SLIVER - frame.width()
+        monitor_rect.left + VISIBLE_SLIVER - current_frame.width()
       }
       HideCorner::BottomRight => monitor_rect.right - VISIBLE_SLIVER,
     };
 
+    let corner_rect = Rect::from_xy(
+      position_x,
+      position_y,
+      current_frame.width(),
+      current_frame.height(),
+    );
+
     // Even though the window size is unchanged, `NativeWindow::set_frame`
     // is used instead of `NativeWindow::reposition` because the latter
     // resulted in occasional incorrect positionings.
-    window.native().set_frame(&Rect::from_xy(
-      position_x,
-      position_y,
-      frame.width(),
-      frame.height(),
-    ))?;
+    window.native().set_frame(&corner_rect)?;
 
-    return Ok(());
+    // `set_frame` positions the shadow-inclusive rect, so the reported
+    // frame ends up inset by the shadow borders.
+    return Ok(Some(IssuedPlacement {
+      frame: corner_rect.apply_delta(
+        &window.native_properties().shadow_borders.inverse(),
+        None,
+      ),
+      outer_frame: corner_rect,
+    }));
   }
 
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
-  } else {
-    use wm_platform::{
-      SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-      SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_MAXIMIZEBOX,
-    };
-
-    // For the cloak hide method, an off-screen window does not need its
-    // position updated — it will be repositioned when its workspace is
-    // shown again. Just cloak it, skipping the `set_window_pos` (and its
-    // DPI second pass) plus the restore-state syscalls. This avoids
-    // redundant work for the (usually many) hidden windows on reload,
-    // startup, and display changes.
-    if config.value.general.hide_method == HideMethod::Cloak && !is_visible
-    {
-      window.native().set_cloaked(true)?;
-      return Ok(());
-    }
-
-    // Restore window if it's minimized/maximized and shouldn't be. This
-    // is needed to be able to move and resize it.
-    let should_restore = match &window.state() {
-      // Need to restore window if transitioning from maximized
-      // fullscreen to non-maximized fullscreen.
-      WindowState::Fullscreen(fullscreen) => {
-        !fullscreen.maximized && window.native().is_maximized()?
-      }
-      // No need to restore window if it'll be minimized. Transitioning
-      // from maximized to minimized works without having to
-      // restore.
-      WindowState::Minimized => false,
-      _ => {
-        window.native().is_minimized()?
-          || window.native().is_maximized()?
-      }
-    };
-
-    if should_restore {
-      // Restoring to position has the same effect as `ShowWindow` with
-      // `SW_RESTORE`, but doesn't cause a flicker.
-      window.native().restore(Some(&rect))?;
-    }
-
-    let mut swp_flags = SWP_NOACTIVATE
-      | SWP_NOCOPYBITS
-      | SWP_NOSENDCHANGING
-      | SWP_ASYNCWINDOWPOS;
-
-    match &window.state() {
-      WindowState::Minimized => {
-        if !window.native().is_minimized()? {
-          window.native().minimize()?;
-        }
-      }
-      WindowState::Fullscreen(fullscreen)
-        if fullscreen.maximized
-          && window.native().has_window_style(WS_MAXIMIZEBOX) =>
-      {
-        if !window.native().is_maximized()? {
-          window.native().maximize()?;
-        }
-
-        window.native().set_window_pos(z_order, &rect, swp_flags)?;
-      }
-      _ => {
-        swp_flags |= SWP_FRAMECHANGED;
-
-        window.native().set_window_pos(z_order, &rect, swp_flags)?;
-
-        // When there's a mismatch between the DPI of the monitor and the
-        // window, the window might be sized incorrectly after the first
-        // move. If we set the position twice, inconsistencies after the
-        // first move are resolved.
-        if window.has_pending_dpi_adjustment() {
-          window.native().set_window_pos(z_order, &rect, swp_flags)?;
-        }
-      }
-    }
-
-    // Set visibility based on the hide method.
-    if config.value.general.hide_method == HideMethod::Cloak {
-      window.native().set_cloaked(!is_visible)?;
-    } else if is_visible {
-      window.native().show()?;
-    } else {
-      window.native().hide()?;
-    }
+    return Ok(None);
   }
 
-  Ok(())
+  // For the cloak hide method, an off-screen window does not need its
+  // position updated — it will be repositioned when its workspace is
+  // shown again. Just cloak it, skipping the `set_window_pos` (and its
+  // DPI second pass) plus the restore-state syscalls. This avoids
+  // redundant work for the (usually many) hidden windows on reload,
+  // startup, and display changes.
+  if config.value.general.hide_method == HideMethod::Cloak && !is_visible {
+    window.native().set_cloaked(true)?;
+    return Ok(None);
+  }
+
+  // Restore window if it's minimized/maximized and shouldn't be. This
+  // is needed to be able to move and resize it.
+  let should_restore = match &window.state() {
+    // Need to restore window if transitioning from maximized
+    // fullscreen to non-maximized fullscreen.
+    WindowState::Fullscreen(fullscreen) => {
+      !fullscreen.maximized && window.native().is_maximized()?
+    }
+    // No need to restore window if it'll be minimized. Transitioning
+    // from maximized to minimized works without having to
+    // restore.
+    WindowState::Minimized => false,
+    _ => {
+      window.native().is_minimized()? || window.native().is_maximized()?
+    }
+  };
+
+  if should_restore {
+    // Restoring to position has the same effect as `ShowWindow` with
+    // `SW_RESTORE`, but doesn't cause a flicker.
+    window.native().restore(Some(&rect))?;
+  }
+
+  let mut swp_flags = SWP_NOACTIVATE
+    | SWP_NOCOPYBITS
+    | SWP_NOSENDCHANGING
+    | SWP_ASYNCWINDOWPOS;
+
+  let issued_placement = match &window.state() {
+    WindowState::Minimized => {
+      if !window.native().is_minimized()? {
+        window.native().minimize()?;
+      }
+
+      None
+    }
+    WindowState::Fullscreen(fullscreen)
+      if fullscreen.maximized
+        && window.native().has_window_style(WS_MAXIMIZEBOX) =>
+    {
+      if !window.native().is_maximized()? {
+        window.native().maximize()?;
+      }
+
+      window.native().set_window_pos(z_order, &rect, swp_flags)?;
+
+      Some(IssuedPlacement {
+        frame,
+        outer_frame: rect,
+      })
+    }
+    _ => {
+      swp_flags |= SWP_FRAMECHANGED;
+
+      window.native().set_window_pos(z_order, &rect, swp_flags)?;
+
+      // When there's a mismatch between the DPI of the monitor and the
+      // window, the window might be sized incorrectly after the first
+      // move. If we set the position twice, inconsistencies after the
+      // first move are resolved.
+      if window.has_pending_dpi_adjustment() {
+        window.native().set_window_pos(z_order, &rect, swp_flags)?;
+      }
+
+      Some(IssuedPlacement {
+        frame,
+        outer_frame: rect,
+      })
+    }
+  };
+
+  // Set visibility based on the hide method.
+  if config.value.general.hide_method == HideMethod::Cloak {
+    window.native().set_cloaked(!is_visible)?;
+  } else if is_visible {
+    window.native().show()?;
+  } else {
+    window.native().hide()?;
+  }
+
+  Ok(issued_placement)
 }
 
 fn jump_cursor(
